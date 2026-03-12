@@ -17,7 +17,7 @@ class DialogueState(Enum):
     LEARNING = "learning"          # 学习中
     ASKING = "asking"             # 问答中
     REVIEWING = "reviewing"       # 复习中
-    GUIDING = "guiding"           # 引导中
+    GUIDING = "guiding"           # 引导中（苏格拉底模式）
     CONFIRMING = "confirming"      # 确认中
 
 
@@ -31,6 +31,11 @@ class DialogueManager:
         self.knowledge_db = KnowledgeDB()
         self.current_term: Optional[str] = None
         self.current_mode = "learn"  # learn/qa/review
+
+        # 苏格拉底会话
+        from agent.socratic import SocraticGuide, SocraticSession
+        self.socratic_guide = SocraticGuide()
+        self.socratic_session: Optional[SocraticSession] = None
 
     def start_session(self, mode: str = "learn") -> str:
         """开始新会话"""
@@ -49,6 +54,10 @@ class DialogueManager:
 
     def handle_input(self, user_input: str) -> str:
         """处理用户输入"""
+        # 检查是否在苏格拉底引导模式
+        if self.state == DialogueState.GUIDING and self.socratic_session:
+            return self._handle_socratic_response(user_input)
+
         from .intent import IntentRecognizer, Intent
 
         # 意图识别
@@ -97,10 +106,9 @@ class DialogueManager:
             term = params['content']
 
         if not term:
-            return "请输入要学习的内容，例如：学习 区块链"
+            return "请输入要学习内容，例如：学习 区块链"
 
         self.current_term = term
-        self.state = DialogueState.LEARNING
 
         # 检查是否已学习
         if self.long_memory.is_learned(term):
@@ -120,8 +128,55 @@ class DialogueManager:
         scheduler = ReviewScheduler()
         scheduler.add_term(term_obj.id, term)
 
+        # 记录统计
+        from features import StatisticsCollector
+        stats = StatisticsCollector()
+        stats.record_new_term()
+
+        # 启动苏格拉底会话
         self.state = DialogueState.GUIDING
-        return f"开始学习: {term}\n\n您对'{term}'有哪些了解？"
+        self.socratic_session = self.socratic_guide.start_session(term, term_obj.definition)
+
+        # 获取第一个问题
+        first_question = self.socratic_guide.get_first_question(self.socratic_session)
+
+        return f"""🤔 开始学习: {term}
+
+{first_question}
+
+(输入您的回答继续，或输入'退出'结束学习)"""
+
+    def _handle_socratic_response(self, user_input: str) -> str:
+        """处理苏格拉底引导中的用户响应"""
+        # 检查退出
+        if user_input.lower() in ["退出", "exit", "quit", "q"]:
+            # 结束会话
+            summary = self.socratic_guide.complete_session(self.socratic_session)
+            self.socratic_session = None
+            self.state = DialogueState.IDLE
+            return summary
+
+        # 检查是否要跳过或继续
+        if user_input.lower() in ["跳过", "skip", "继续", "next"]:
+            if self.socratic_guide.should_continue(self.socratic_session):
+                next_q = self.socratic_guide.get_next_question(self.socratic_session, "跳过")
+                return f"\n{next_q}\n(输入您的回答继续，或输入'退出'结束学习)"
+            else:
+                summary = self.socratic_guide.complete_session(self.socratic_session)
+                self.socratic_session = None
+                self.state = DialogueState.IDLE
+                return summary
+
+        # 获取下一个问题
+        if self.socratic_guide.should_continue(self.socratic_session):
+            next_question = self.socratic_guide.get_next_question(self.socratic_session, user_input)
+            return f"\n{next_question}\n\n(输入您的回答继续，或输入'退出'结束学习)"
+        else:
+            # 完成学习
+            summary = self.socratic_guide.generate_ai_summary(self.socratic_session)
+            self.socratic_session = None
+            self.state = DialogueState.IDLE
+            return summary
 
     def _handle_ask(self, question: str) -> str:
         """处理问答"""

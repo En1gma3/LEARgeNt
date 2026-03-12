@@ -17,6 +17,13 @@ from .prompt import (
 )
 
 
+# 导入LLM客户端
+try:
+    from ..llm_client import get_llm_client, create_llm_client, BaseLLMClient
+except ImportError:
+    BaseLLMClient = object
+
+
 @dataclass
 class DialogueTurn:
     """对话轮次"""
@@ -56,14 +63,26 @@ class SocraticGuide:
     5. AI结构化总结
     """
 
-    def __init__(self, max_turns: int = 5):
+    def __init__(self, max_turns: int = 5, llm_client=None):
         """
         初始化
 
         Args:
             max_turns: 最大对话轮次
+            llm_client: LLM客户端，默认使用全局客户端
         """
         self.max_turns = max_turns
+        self._llm_client = llm_client
+
+    @property
+    def llm_client(self):
+        """获取LLM客户端"""
+        if self._llm_client is None:
+            try:
+                self._llm_client = get_llm_client()
+            except Exception:
+                pass
+        return self._llm_client
 
     def start_session(self, term: str, definition: str) -> SocraticSession:
         """
@@ -82,6 +101,23 @@ class SocraticGuide:
             state=DialogueState.DIAGNOSIS
         )
         return session
+
+    def get_first_question(self, session: SocraticSession) -> str:
+        """
+        获取第一个问题（诊断理解）
+
+        Args:
+            session: 当前会话
+
+        Returns:
+            str: 第一个问题
+        """
+        # 使用LLM生成问题
+        if self.llm_client:
+            return self._generate_question_with_llm(session, "diagnosis")
+
+        # 降级到模板
+        return f"在学习'{session.term}'之前，请问你对'{session.term}'有哪些了解？"
 
     def get_diagnosis_prompt(self, session: SocraticSession) -> str:
         """
@@ -120,6 +156,87 @@ class SocraticGuide:
         )
         session.turns.append(turn)
 
+        # 使用LLM生成下一个问题
+        if self.llm_client:
+            return self._generate_question_with_llm(session, "guiding", student_answer)
+
+        # 降级到规则引擎
+        return self._rule_based_question(session, student_answer)
+
+    def _generate_question_with_llm(
+        self,
+        session: SocraticSession,
+        phase: str,
+        student_answer: str = ""
+    ) -> str:
+        """使用LLM生成问题"""
+        try:
+            # 构建消息
+            messages = [
+                {"role": "system", "content": self._build_system_prompt(session)}
+            ]
+
+            # 添加对话历史
+            for turn in session.turns[-3:]:  # 最近3轮
+                if turn.question:
+                    messages.append({"role": "assistant", "content": turn.question})
+                if turn.student_answer:
+                    messages.append({"role": "user", "content": turn.student_answer})
+
+            # 根据阶段添加不同的问题请求
+            if phase == "diagnosis":
+                messages.append({
+                    "role": "user",
+                    "content": f"学生正在学习'{session.term}'。请生成一个诊断问题，询问学生对这个概念的理解程度。"
+                })
+            elif phase == "guiding":
+                messages.append({
+                    "role": "user",
+                    "content": f"学生的回答是：'{student_answer}'。请根据学生的回答，生成一个苏格拉底式的问题来引导学生深入思考。问题类型可以是：澄清、假设、证据、反例、推论、元认知。"
+                })
+            elif phase == "summary":
+                messages.append({
+                    "role": "user",
+                    "content": "请引导学生用自己的话总结这个概念的核心要点。"
+                })
+
+            response = self.llm_client.chat(messages)
+            return response.strip()
+
+        except Exception as e:
+            print(f"LLM调用失败: {e}")
+            return self._rule_based_question(session, student_answer)
+
+    def _build_system_prompt(self, session: SocraticSession) -> str:
+        """构建系统提示词"""
+        return f"""你是一位苏格拉底式的学习导师。你的任务是引导学生自己思考和发现答案，而不是直接给出答案。
+
+当前学习主题: {session.term}
+主题定义: {session.definition}
+
+苏格拉底提问原则：
+1. 答案保留：不直接给答案，通过提问引导
+2. 小步推进：逐步拆解大问题
+3. 鼓励解释：要求说明推理过程
+4. 认知冲突：引导发现逻辑矛盾
+5. 结构总结：最终必须总结
+
+六类核心问题：
+- 澄清问题：理解学生想法
+- 假设问题：找出隐含假设
+- 证据问题：要求支持理由
+- 反例问题：测试理论稳固性
+- 推论问题：探索结论影响
+- 元认知问题：训练反思思维
+
+请根据学生的回答，选择合适的问题类型进行提问。"""
+
+    def _rule_based_question(
+        self,
+        session: SocraticSession,
+        student_answer: str
+    ) -> str:
+        """基于规则的问题生成（LLM不可用时的降级方案）"""
         # 根据当前状态决定下一步
         if session.state == DialogueState.DIAGNOSIS:
             # 诊断完成，进入引导推理
@@ -221,9 +338,9 @@ class SocraticGuide:
         session: SocraticSession,
         answer: str
     ) -> bool:
-        """判断回答是否正确（简化版，实际可用LLM判断）"""
-        # 简化实现：检查回答长度和关键程度
-        return len(answer) > 10 and "理解" in answer or "知道" in answer
+        """判断回答是否正确"""
+        # 简化实现：检查回答长度
+        return len(answer) > 10
 
     def _is_answer_partial(
         self,
@@ -234,7 +351,7 @@ class SocraticGuide:
         return len(answer) > 5
 
     def _get_key_aspect(self, session: SocraticSession) -> str:
-        """获取主题的关键方面（简化版）"""
+        """获取主题的关键方面"""
         return "核心原理"
 
     def _get_partial_answer(self, session: SocraticSession) -> str:
@@ -258,9 +375,9 @@ class SocraticGuide:
             return False
         return True
 
-    def complete_session(self, session: SocraticSession) -> str:
+    def generate_ai_summary(self, session: SocraticSession) -> str:
         """
-        完成会话，生成AI总结
+        使用LLM生成AI总结
 
         Args:
             session: 当前会话
@@ -268,6 +385,48 @@ class SocraticGuide:
         Returns:
             str: 结构化总结
         """
+        # 使用LLM生成总结
+        if self.llm_client:
+            try:
+                messages = [
+                    {"role": "system", "content": "你是一位知识渊博的学习导师，请根据学生的对话生成结构化总结。"},
+                    {"role": "user", "content": f"""请为学习主题'{session.term}'生成学习总结。
+
+主题定义: {session.definition}
+
+对话历史:
+{self._format_conversation(session)}
+
+请生成包含以下内容的总结：
+1. 核心要点 (3-5点)
+2. 关键原理
+3. 相关概念
+4. 实践建议
+"""}
+                ]
+                response = self.llm_client.chat(messages)
+                session.is_completed = True
+                session.state = DialogueState.COMPLETED
+                return f"✅ {session.term} 学习完成！\n\n{response}"
+            except Exception as e:
+                print(f"LLM总结生成失败: {e}")
+
+        # 降级到模板
+        return self._template_summary(session)
+
+    def _format_conversation(self, session: SocraticSession) -> str:
+        """格式化对话历史"""
+        lines = []
+        for i, turn in enumerate(session.turns, 1):
+            lines.append(f"轮次{i}:")
+            if turn.question:
+                lines.append(f"  AI: {turn.question}")
+            if turn.student_answer:
+                lines.append(f"  学生: {turn.student_answer}")
+        return "\n".join(lines) if lines else "无对话记录"
+
+    def _template_summary(self, session: SocraticSession) -> str:
+        """模板总结"""
         session.is_completed = True
         session.state = DialogueState.COMPLETED
 
@@ -284,3 +443,27 @@ class SocraticGuide:
 
 继续学习其他概念，或使用 /tag add {session.term} <标签> 添加标签。
 """
+
+    def complete_session(self, session: SocraticSession) -> str:
+        """
+        完成会话（兼容旧接口）
+
+        Args:
+            session: 当前会话
+
+        Returns:
+            str: 结构化总结
+        """
+        return self.generate_ai_summary(session)
+
+    def _extract_key_points(self, session: SocraticSession) -> str:
+        """提取关键要点"""
+        return f"- {session.term}的核心定义"
+
+    def _extract_principles(self, session: SocraticSession) -> str:
+        """提取原理"""
+        return session.definition[:100] if session.definition else "详见定义"
+
+    def _get_related_terms(self, session: SocraticSession) -> str:
+        """获取相关术语"""
+        return "无"

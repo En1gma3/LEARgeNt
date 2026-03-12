@@ -111,8 +111,29 @@ LEARGENT/
 
 ## 配置LLM
 
-编辑 `agent/socratic/core.py` 配置LLM客户端以启用完整的苏格拉底对话功能。
+默认使用Mock客户端（用于测试）。配置以下环境变量启用真实LLM：
+
+### OpenAI
+```bash
+export OPENAI_API_KEY="sk-..."
+export LLM_PROVIDER="openai"
+export LLM_MODEL="gpt-4"
+```
+
+### Anthropic (Claude)
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+export LLM_PROVIDER="anthropic"
+export LLM_MODEL="claude-3-opus-20240229"
+```
+
+### Ollama (本地)
+```bash
+export OLLAMA_BASE_URL="http://localhost:11434"
+export LLM_PROVIDER="ollama"
+export LLM_MODEL="llama2"
+```
 
 ## 版本
 
-v0.2.0
+v0.3.0

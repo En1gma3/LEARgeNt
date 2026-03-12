@@ -13,12 +13,21 @@
 - 结构总结：最终必须总结
 """
 
-from .core import SocraticGuide
+from .core import SocraticGuide, SocraticSession
 from .types import QuestionType, HintLevel, DialogueState
 from .prompt import SOCRATIC_SYSTEM_PROMPT
 
+# 从父模块导入LLM客户端
+import os
+llm_client = None
+try:
+    from ..llm_client import create_llm_client, get_llm_client, set_llm_client
+except ImportError:
+    pass
+
 __all__ = [
     'SocraticGuide',
+    'SocraticSession',
     'QuestionType',
     'HintLevel',
     'DialogueState',
