@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 
 @dataclass
@@ -117,7 +117,7 @@ class StatisticsCollector:
         }
 
         for i in range(days):
-            day = today - datetime.timedelta(days=i)
+            day = today - timedelta(days=i)
             key = day.strftime("%Y-%m-%d")
             if key in self._data["daily"]:
                 day_stats = self._data["daily"][key]
