@@ -8,12 +8,13 @@
     每次退出时会保存当前会话
 """
 
-from .context import ShortTermMemory, SessionContext, Message
+from .context import ShortTermMemory, SessionContext, Message, KnowledgePoint
 from .long_term import LongTermMemory
 
 __all__ = [
     'ShortTermMemory',
     'SessionContext',
     'Message',
+    'KnowledgePoint',
     'LongTermMemory',
 ]

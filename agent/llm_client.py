@@ -131,55 +131,58 @@ class OllamaClient(BaseLLMClient):
 
 
 class MiniMaxClient(BaseLLMClient):
-    """MiniMax客户端 (兼容Anthropic API格式)"""
+    """MiniMax客户端 (使用官方 Anthropic SDK)"""
 
-    def __init__(self, api_key: str = None, base_url: str = None, model: str = "MiniMax-M2.5"):
+    def __init__(self, api_key: str = None, base_url: str = None, model: str = "MiniMax-M2.7"):
         self.api_key = api_key or os.getenv("ANTHROPIC_AUTH_TOKEN")
-        self.base_url = base_url or os.getenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
+        self.base_url = base_url or os.getenv("ANTHROPIC_BASE_URL")
         self.model = model
+        self._client = None
+
+    def _get_client(self):
+        """获取或创建 Anthropic 客户端"""
+        if self._client is None:
+            import anthropic
+            self._client = anthropic.Anthropic(
+                api_key=self.api_key,
+                base_url=self.base_url
+            )
+        return self._client
 
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        import requests
-
-        # 将消息转换为Anthropic格式
+        # 将消息转换为 Anthropic 格式
         system = ""
         anthropic_messages = []
         for msg in messages:
             if msg["role"] == "system":
                 system = msg["content"]
             else:
-                anthropic_messages.append(msg)
+                anthropic_messages.append({
+                    "role": msg["role"],
+                    "content": [{
+                        "type": "text",
+                        "text": msg["content"]
+                    }]
+                })
 
-        headers = {
-            "x-api-key": self.api_key,
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01"
-        }
+        client = self._get_client()
+        model = kwargs.get("model", self.model)
+        max_tokens = kwargs.get("max_tokens", 1000)
 
-        data = {
-            "model": kwargs.get("model", self.model),
-            "max_tokens": kwargs.get("max_tokens", 1000),
-            "system": system,
-            "messages": anthropic_messages
-        }
-
-        response = requests.post(
-            f"{self.base_url}/v1/messages",
-            headers=headers,
-            json=data,
-            timeout=30
+        message = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system if system else None,
+            messages=anthropic_messages
         )
-        response.raise_for_status()
 
-        # MiniMax响应格式与Anthropic不同
-        # content 是数组，可能包含 thinking 和 text 类型
-        content = response.json()["content"]
-        for item in content:
-            if item.get("type") == "text":
-                return item["text"]
+        # 解析响应
+        for block in message.content:
+            if block.type == "text":
+                return block.text
 
-        # 如果没有text类型，返回第一个可用的内容
-        return str(content[0])
+        # 如果没有 text 类型，返回第一个可用的内容
+        return str(message.content[0])
 
 
 class MockLLMClient(BaseLLMClient):

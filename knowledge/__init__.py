@@ -4,7 +4,7 @@
 提供名词、标签、关联的存储和检索功能。
 """
 
-from .models import Term, Tag, TermTag, TermRelation, TermVersion
+from .models import Term, Tag, TermTag, TermRelation, TermVersion, KnowledgePoint
 from .db import KnowledgeDB
 
 __all__ = [
@@ -13,5 +13,6 @@ __all__ = [
     'TermTag',
     'TermRelation',
     'TermVersion',
+    'KnowledgePoint',
     'KnowledgeDB',
 ]

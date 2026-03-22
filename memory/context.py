@@ -9,11 +9,87 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 from utils import get_logger
 
 logger = get_logger(__name__)
+
+
+class KnowledgePoint:
+    """知识点（用于 Learn 模式的三锚点结构）"""
+
+    def __init__(
+        self,
+        id: str = "",
+        name: str = "",
+        definition: str = "",
+        topic_anchor: str = "",
+        dependency_anchors: List[str] = None,
+        semantic_anchor: str = "",
+        contrast_anchor: str = "",
+        example_anchor: str = "",
+        source: str = "",
+        source_url: str = "",
+        is_verified: bool = False,
+        is_expired: bool = False
+    ):
+        self.id = id or str(uuid.uuid4())
+        self.name = name
+        self.definition = definition
+        self.topic_anchor = topic_anchor
+        self.dependency_anchors = dependency_anchors or []
+        self.semantic_anchor = semantic_anchor
+        self.contrast_anchor = contrast_anchor
+        self.example_anchor = example_anchor
+        self.source = source
+        self.source_url = source_url
+        self.is_verified = is_verified
+        self.is_expired = is_expired
+        self.created_at = datetime.now()
+        self.updated_at = datetime.now()
+
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "definition": self.definition,
+            "topic_anchor": self.topic_anchor,
+            "dependency_anchors": self.dependency_anchors,
+            "semantic_anchor": self.semantic_anchor,
+            "contrast_anchor": self.contrast_anchor,
+            "example_anchor": self.example_anchor,
+            "source": self.source,
+            "source_url": self.source_url,
+            "is_verified": self.is_verified,
+            "is_expired": self.is_expired,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat()
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "KnowledgePoint":
+        """从字典创建"""
+        obj = cls(
+            id=data.get("id", ""),
+            name=data.get("name", ""),
+            definition=data.get("definition", ""),
+            topic_anchor=data.get("topic_anchor", ""),
+            dependency_anchors=data.get("dependency_anchors", []),
+            semantic_anchor=data.get("semantic_anchor", ""),
+            contrast_anchor=data.get("contrast_anchor", ""),
+            example_anchor=data.get("example_anchor", ""),
+            source=data.get("source", ""),
+            source_url=data.get("source_url", ""),
+            is_verified=data.get("is_verified", False),
+            is_expired=data.get("is_expired", False)
+        )
+        if "created_at" in data:
+            obj.created_at = datetime.fromisoformat(data["created_at"])
+        if "updated_at" in data:
+            obj.updated_at = datetime.fromisoformat(data["updated_at"])
+        return obj
 
 
 @dataclass
@@ -46,7 +122,7 @@ class Message:
 
 @dataclass
 class SessionContext:
-    """会话上下文"""
+    """会话上下文（扩展版，包含 Learn 模式所需的三锚点和会话级工具）"""
     session_id: str
     mode: str = "learn"  # learn/qa/review
     context: str = ""  # 当前语境
@@ -54,6 +130,17 @@ class SessionContext:
     updated_at: datetime = field(default_factory=datetime.now)
     messages: List[Message] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Learn 模式专用字段
+    learned_knowledge_points: List[KnowledgePoint] = field(default_factory=list)  # 已学习的知识点
+    discovered_topic_anchors: Set[str] = field(default_factory=set)  # 已发现的主题锚点
+    discovered_dependency_anchors: Set[str] = field(default_factory=set)  # 已发现的依赖锚点
+    current_theme: str = None  # 当前学习主题
+
+    # 会话级工具（惰性初始化）
+    _anchor_builder: Any = field(default=None, repr=False)
+    _theme_decomposer: Any = field(default=None, repr=False)
+    _llm_client: Any = field(default=None, repr=False)
 
     def add_message(self, role: str, content: str, metadata: Dict[str, Any] = None):
         """添加消息"""
@@ -83,6 +170,36 @@ class SessionContext:
                 pass
         return f"会话包含 {len(self.messages)} 条消息"
 
+    def get_llm_client(self):
+        """获取 LLM 客户端（惰性初始化）"""
+        if self._llm_client is None:
+            from agent.llm_client import get_llm_client
+            self._llm_client = get_llm_client()
+        return self._llm_client
+
+    def get_anchor_builder(self):
+        """获取三锚点构建器（惰性初始化）"""
+        if self._anchor_builder is None:
+            from agent.anchor import AnchorBuilder
+            self._anchor_builder = AnchorBuilder(self)
+        return self._anchor_builder
+
+    def get_theme_decomposer(self):
+        """获取主题拆解器（惰性初始化）"""
+        if self._theme_decomposer is None:
+            from agent.decomposer import ThemeDecomposer
+            self._theme_decomposer = ThemeDecomposer(self)
+        return self._theme_decomposer
+
+    def add_learned_knowledge_point(self, kp: KnowledgePoint):
+        """添加已学习的知识点"""
+        self.learned_knowledge_points.append(kp)
+        # 同步锚点到发现集合
+        if kp.topic_anchor:
+            self.discovered_topic_anchors.add(kp.topic_anchor)
+        for dep in kp.dependency_anchors:
+            self.discovered_dependency_anchors.add(dep)
+
     def to_dict(self) -> dict:
         """转换为字典（用于持久化）"""
         return {
@@ -92,13 +209,18 @@ class SessionContext:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "messages": [m.to_dict() for m in self.messages],
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "learned_knowledge_points": [kp.to_dict() for kp in self.learned_knowledge_points],
+            "discovered_topic_anchors": list(self.discovered_topic_anchors),
+            "discovered_dependency_anchors": list(self.discovered_dependency_anchors),
+            "current_theme": self.current_theme
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionContext":
         """从字典创建"""
         messages = [Message.from_dict(m) for m in data.get("messages", [])]
+        knowledge_points = [KnowledgePoint.from_dict(kp) for kp in data.get("learned_knowledge_points", [])]
         return cls(
             session_id=data["session_id"],
             mode=data.get("mode", "learn"),
@@ -106,7 +228,11 @@ class SessionContext:
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
             messages=messages,
-            metadata=data.get("metadata", {})
+            metadata=data.get("metadata", {}),
+            learned_knowledge_points=knowledge_points,
+            discovered_topic_anchors=set(data.get("discovered_topic_anchors", [])),
+            discovered_dependency_anchors=set(data.get("discovered_dependency_anchors", [])),
+            current_theme=data.get("current_theme")
         )
 
 
