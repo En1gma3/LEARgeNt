@@ -1,10 +1,19 @@
 """
 短期记忆 - 当前会话上下文
+
+支持会话持久化到磁盘
 """
 
-from dataclasses import dataclass, field
+import json
+import uuid
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+from utils import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -14,6 +23,25 @@ class Message:
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return {
+            "role": self.role,
+            "content": self.content,
+            "timestamp": self.timestamp.isoformat(),
+            "metadata": self.metadata
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Message":
+        """从字典创建"""
+        return cls(
+            role=data["role"],
+            content=data["content"],
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            metadata=data.get("metadata", {})
+        )
 
 
 @dataclass
@@ -35,6 +63,7 @@ class SessionContext:
             metadata=metadata or {}
         ))
         self.updated_at = datetime.now()
+        logger.debug(f"Session {self.session_id}: Added {role} message")
 
     def get_recent_messages(self, count: int = 10) -> List[Message]:
         """获取最近的消息"""
@@ -54,19 +83,80 @@ class SessionContext:
                 pass
         return f"会话包含 {len(self.messages)} 条消息"
 
+    def to_dict(self) -> dict:
+        """转换为字典（用于持久化）"""
+        return {
+            "session_id": self.session_id,
+            "mode": self.mode,
+            "context": self.context,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "messages": [m.to_dict() for m in self.messages],
+            "metadata": self.metadata
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SessionContext":
+        """从字典创建"""
+        messages = [Message.from_dict(m) for m in data.get("messages", [])]
+        return cls(
+            session_id=data["session_id"],
+            mode=data.get("mode", "learn"),
+            context=data.get("context", ""),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+            messages=messages,
+            metadata=data.get("metadata", {})
+        )
+
 
 class ShortTermMemory:
-    """短期记忆管理器"""
+    """短期记忆管理器（支持会话持久化）"""
 
-    def __init__(self):
+    def __init__(self, storage_path: str = "./data/sessions.json"):
+        self.storage_path = Path(storage_path)
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+
         self.current_session: Optional[SessionContext] = None
         self._history: List[SessionContext] = []
 
+        # 加载历史会话
+        self._load_sessions()
+
+    def _load_sessions(self):
+        """从磁盘加载历史会话"""
+        if self.storage_path.exists():
+            try:
+                with open(self.storage_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                sessions = data.get("sessions", [])
+                self._history = [SessionContext.from_dict(s) for s in sessions]
+                logger.info(f"Loaded {len(self._history)} sessions from disk")
+            except Exception as e:
+                logger.error(f"Failed to load sessions: {e}")
+                self._history = []
+        else:
+            logger.info("No sessions file found, starting fresh")
+            self._history = []
+
+    def _save_sessions(self):
+        """保存所有会话到磁盘"""
+        try:
+            data = {
+                "last_updated": datetime.now().isoformat(),
+                "sessions": [s.to_dict() for s in self._history]
+            }
+            with open(self.storage_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.debug(f"Saved {len(self._history)} sessions to disk")
+        except Exception as e:
+            logger.error(f"Failed to save sessions: {e}")
+
     def create_session(self, session_id: str = None, mode: str = "learn") -> SessionContext:
         """创建新会话"""
-        import uuid
         session_id = session_id or str(uuid.uuid4())
         self.current_session = SessionContext(session_id=session_id, mode=mode)
+        logger.info(f"Created new session: {session_id} (mode={mode})")
         return self.current_session
 
     def get_current_session(self) -> Optional[SessionContext]:
@@ -114,11 +204,60 @@ class ShortTermMemory:
         return [{"role": m.role, "content": m.content} for m in messages]
 
     def save_session(self):
-        """保存当前会话到历史"""
+        """保存当前会话到历史并持久化"""
         if self.current_session:
-            self._history.append(self.current_session)
+            # 检查是否已存在（避免重复）
+            existing_ids = [s.session_id for s in self._history]
+            if self.current_session.session_id not in existing_ids:
+                self._history.append(self.current_session)
+                logger.info(f"Session {self.current_session.session_id} saved to history")
+            else:
+                # 更新现有会话
+                for i, s in enumerate(self._history):
+                    if s.session_id == self.current_session.session_id:
+                        self._history[i] = self.current_session
+                        break
+                logger.debug(f"Session {self.current_session.session_id} updated")
+
+            # 持久化到磁盘
+            self._save_sessions()
 
     def clear_session(self):
         """清除当前会话"""
         self.save_session()
         self.current_session = None
+        logger.debug("Current session cleared")
+
+    def get_session_history(self, limit: int = 20) -> List[SessionContext]:
+        """获取会话历史列表"""
+        return self._history[-limit:]
+
+    def get_session_by_id(self, session_id: str) -> Optional[SessionContext]:
+        """根据 ID 获取会话"""
+        for session in self._history:
+            if session.session_id == session_id:
+                return session
+        return None
+
+    def delete_session(self, session_id: str) -> bool:
+        """删除指定会话"""
+        for i, session in enumerate(self._history):
+            if session.session_id == session_id:
+                del self._history[i]
+                self._save_sessions()
+                logger.info(f"Session {session_id} deleted")
+                return True
+        return False
+
+    def list_sessions(self) -> List[Dict[str, Any]]:
+        """列出所有会话摘要"""
+        return [
+            {
+                "session_id": s.session_id,
+                "mode": s.mode,
+                "created_at": s.created_at.isoformat(),
+                "message_count": len(s.messages),
+                "context": s.context[:50] if s.context else ""
+            }
+            for s in reversed(self._history)
+        ]

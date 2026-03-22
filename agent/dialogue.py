@@ -9,6 +9,9 @@ from enum import Enum
 
 from memory import ShortTermMemory, LongTermMemory
 from knowledge import KnowledgeDB
+from utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class DialogueState(Enum):
@@ -25,6 +28,7 @@ class DialogueManager:
     """对话管理器"""
 
     def __init__(self):
+        logger.info("Initializing DialogueManager")
         self.state = DialogueState.IDLE
         self.short_memory = ShortTermMemory()
         self.long_memory = LongTermMemory()
@@ -36,9 +40,11 @@ class DialogueManager:
         from agent.socratic import SocraticGuide, SocraticSession
         self.socratic_guide = SocraticGuide()
         self.socratic_session: Optional[SocraticSession] = None
+        logger.info("DialogueManager initialized")
 
     def start_session(self, mode: str = "learn") -> str:
         """开始新会话"""
+        logger.info(f"Starting new session with mode={mode}")
         session = self.short_memory.create_session(mode=mode)
         self.current_mode = mode
         self.state = DialogueState.IDLE
@@ -48,14 +54,19 @@ class DialogueManager:
         scheduler = ReviewScheduler()
         due = scheduler.get_due_reviews()
         if due:
+            logger.info(f"Found {len(due)} due reviews")
             return f"提醒: 您有 {len(due)} 个名词需要复习"
 
+        logger.info("No due reviews")
         return "欢迎使用 LearnMate！请输入要学习的内容。"
 
     def handle_input(self, user_input: str) -> str:
         """处理用户输入"""
+        logger.debug(f"handle_input called with: {user_input[:50]}...")
+
         # 检查是否在苏格拉底引导模式
         if self.state == DialogueState.GUIDING and self.socratic_session:
+            logger.debug("Currently in GUIDING state, delegating to socratic handler")
             return self._handle_socratic_response(user_input)
 
         from .intent import IntentRecognizer, Intent
@@ -63,12 +74,14 @@ class DialogueManager:
         # 意图识别
         recognizer = IntentRecognizer()
         intent, entity, params = recognizer.recognize(user_input)
+        logger.debug(f"Intent recognized: {intent}, entity: {entity}, params: {params}")
 
         # 记录用户消息
         self.short_memory.add_user_message(user_input)
 
         # 根据意图处理
         if intent == Intent.LEARN:
+            logger.info(f"Handling LEARN intent for: {entity}")
             return self._handle_learn(entity, params)
         elif intent == Intent.ASK:
             return self._handle_ask(user_input)
@@ -79,6 +92,7 @@ class DialogueManager:
         elif intent == Intent.LIST:
             return self._handle_list(entity, params)
         elif intent == Intent.VIEW:
+            logger.info(f"Handling VIEW intent for: {params.get('term')}")
             return self._handle_view(params.get('term'))
         elif intent == Intent.REVIEW:
             return self._handle_review(entity, params)
@@ -92,11 +106,16 @@ class DialogueManager:
             return self._handle_reminder(entity, params)
         elif intent == Intent.HELP:
             return self._handle_help(params.get('topic'))
+        elif intent == Intent.SESSIONS:
+            logger.info("Handling SESSIONS intent")
+            return self._handle_sessions(params.get('action'))
         elif intent == Intent.MODE:
             return self._handle_mode(params.get('mode'))
         elif intent == Intent.QUIT:
+            logger.info("QUIT intent received")
             return "再见！"
         else:
+            logger.warning(f"Unknown intent: {user_input}")
             return self._handle_unknown(user_input)
 
     def _handle_learn(self, term: str, params: Dict) -> str:
@@ -118,9 +137,26 @@ class DialogueManager:
         # 添加到已学习
         self.long_memory.add_learned_term(term)
 
+        # 尝试从 Wikipedia 获取术语信息并使用 LLM 结构化
+        from features import FetcherManager
+        fetcher_manager = FetcherManager()
+        term_info = fetcher_manager.fetch_and_enhance(term)
+
         # 存入知识库
         from knowledge import Term
-        term_obj = Term(id="", name=term, definition=f"学习: {term}")
+        if term_info:
+            term_obj = Term(
+                id="",
+                name=term,
+                definition=term_info.structured_definition or term_info.definition,
+                summary=term_info.summary,
+                source=term_info.source
+            )
+            source_note = f"\n\n📚 信息来源: {term_info.source}"
+        else:
+            term_obj = Term(id="", name=term, definition=f"学习: {term}")
+            source_note = ""
+
         self.knowledge_db.add_term(term_obj)
 
         # 加入复习计划
@@ -140,7 +176,7 @@ class DialogueManager:
         # 获取第一个问题
         first_question = self.socratic_guide.get_first_question(self.socratic_session)
 
-        return f"""🤔 开始学习: {term}
+        return f"""🤔 开始学习: {term}{source_note}
 
 {first_question}
 
@@ -381,6 +417,27 @@ LearnMate 帮助
             self.current_mode = mode
             return f"已切换到 {mode} 模式"
         return "用法: /mode <learn/qa/review>"
+
+    def _handle_sessions(self, action: Optional[str]) -> str:
+        """处理会话历史"""
+        if action == "view":
+            return "用法: /sessions view <session_id>"
+
+        sessions = self.short_memory.list_sessions()
+        if not sessions:
+            return "暂无会话历史"
+
+        lines = ["会话历史:"]
+        for i, s in enumerate(sessions[:10], 1):
+            ctx = s.get('context', '')
+            ctx_preview = ctx[:30] + "..." if len(ctx) > 30 else ctx or "(无语境)"
+            lines.append(
+                f"{i}. [{s['mode']}] {s['created_at'][:19]} | "
+                f"{s['message_count']}条消息 | {ctx_preview}"
+            )
+
+        lines.append("\n输入 /sessions view <id> 查看详情")
+        return "\n".join(lines)
 
     def _handle_unknown(self, user_input: str) -> str:
         """处理未知输入"""

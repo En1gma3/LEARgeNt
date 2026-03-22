@@ -1,0 +1,23 @@
+# LearnMate 配置文件
+# 默认配置文件位置: config/config.yaml
+# 可通过环境变量 LEARNMATE_CONFIG 指定其他位置
+# 配置项可通过环境变量覆盖: ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, LLM_MODEL 等
+
+llm:
+  # LLM provider: openai/anthropic/ollama/minimax/mock
+  provider: "minimax"
+
+  # API密钥 (可通过环境变量 ANTHROPIC_AUTH_TOKEN 覆盖)
+  api_key: ""
+
+  # 自定义API地址 (可通过环境变量 ANTHROPIC_BASE_URL 覆盖)
+  base_url: ""
+
+  # 模型名称 (可通过环境变量 LLM_MODEL 覆盖)
+  model: "MiniMax-M2.5"
+
+  # 温度参数
+  temperature: 0.7
+
+  # 最大token数
+  max_tokens: 1000

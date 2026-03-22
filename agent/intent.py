@@ -29,6 +29,7 @@ class Intent(Enum):
     VIEW = "view"              # 查看详情
     EDIT = "edit"              # 编辑
     HISTORY = "history"        # 历史记录
+    SESSIONS = "sessions"      # 会话历史
     HELP = "help"             # 帮助
     QUIT = "quit"              # 退出
     UNKNOWN = "unknown"        # 未知
@@ -99,6 +100,9 @@ COMMAND_PATTERNS = {
 
     # 帮助
     r'^/help(?:\s+(\S+))?': (Intent.HELP, None),
+
+    # 会话历史
+    r'^/sessions(?:\s+(list|view|delete))?': (Intent.SESSIONS, None),
 
     # 退出
     r'^/(?:exit|quit|q)$': (Intent.QUIT, None),
@@ -212,6 +216,11 @@ class IntentRecognizer:
                     if groups[0]:
                         params['topic'] = groups[0]
 
+                # 会话
+                elif intent == Intent.SESSIONS:
+                    if groups[0]:
+                        params['action'] = groups[0]
+
                 # 模式
                 elif intent == Intent.MODE:
                     if groups[0]:
@@ -227,17 +236,24 @@ class IntentRecognizer:
             r'^(\S+)$',  # 单独名词
         ]
 
+        # 排除常见的非学习词汇
+        non_learn_words = {'exit', 'quit', '退出', 'q', 'bye', '再见', 'help', '帮助'}
+
         for pattern in learn_indicators:
             match = re.match(pattern, user_input)
             if match:
                 term = match.group(1)
-                # 排除命令关键词
-                if not term.startswith('/'):
+                # 排除命令关键词和非学习词汇
+                if not term.startswith('/') and term.lower() not in non_learn_words:
                     return Intent.LEARN, term, {'content': term}
 
         # 问答模式
         question_indicators = ['是什么', '为什么', '如何', '怎么', '?', '？']
         if any(ind in user_input for ind in question_indicators):
             return Intent.ASK, user_input, {}
+
+        # 检查简单退出命令（不带 /）
+        if user_input.lower() in ['exit', 'quit', 'q', '退出', '再见', 'bye']:
+            return Intent.QUIT, None, {}
 
         return Intent.UNKNOWN, None, {}

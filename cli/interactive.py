@@ -12,16 +12,21 @@ from interest_predictor import InterestPredictor
 from interest_predictor.predictor import PredictionContext
 from agent.socratic import SocraticGuide
 from agent.dialogue import DialogueManager
+from utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class InteractiveMode:
     """交互模式"""
 
     def __init__(self):
+        logger.info("Initializing InteractiveMode")
         self.predictor = InterestPredictor()
         self.socratic = SocraticGuide()
         self.dialogue = DialogueManager()
         self.learned_terms: List[str] = []
+        logger.info("InteractiveMode initialized")
 
     def run(self) -> int:
         """运行交互模式"""
@@ -40,6 +45,8 @@ class InteractiveMode:
             try:
                 user_input = input("> ").strip()
             except (EOFError, KeyboardInterrupt):
+                logger.info("Received EOF/KeyboardInterrupt")
+                self._cleanup()
                 print("\n退出")
                 return 0
 
@@ -47,19 +54,30 @@ class InteractiveMode:
                 continue
 
             if user_input.lower() in ["/exit", "/quit", "exit", "quit", "退出"]:
+                logger.info("User requested exit")
+                self._cleanup()
                 print("再见!")
                 return 0
 
             # 使用对话管理器处理输入
+            logger.debug(f"Processing input: {user_input[:50]}...")
             response = self.dialogue.handle_input(user_input)
             print(response)
             print()
 
             # 检查是否退出
             if response == "再见！":
+                self._cleanup()
                 return 0
 
         return 0
+
+    def _cleanup(self):
+        """退出前清理 - 保存会话"""
+        logger.info("Cleaning up before exit")
+        # 保存当前会话
+        self.dialogue.short_memory.save_session()
+        logger.info("Session saved successfully")
 
     def learn_concept(self, concept: str) -> int:
         """学习指定概念"""
@@ -83,6 +101,8 @@ class InteractiveMode:
   /reminder list    - 查看提醒
   /context show     - 显示当前语境
   /mode <类型>      - 切换模式(learn/qa/review)
+  /sessions         - 查看会话历史
+  /sessions view <id> - 查看会话详情
   /help             - 显示帮助
   /exit             - 退出
 

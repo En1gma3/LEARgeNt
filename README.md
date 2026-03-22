@@ -58,6 +58,7 @@ python -m cli learn 区块链
 | `/learn company <公司>` | 了解公司相关知识 |
 | `/learn whatis <问题>` | 什么是...问题 |
 | `/list` | 显示已学习内容 |
+| `/sessions` | 查看会话历史 |
 | `/help` | 显示帮助 |
 | `/exit` | 退出 |
 
@@ -105,15 +106,62 @@ LEARGENT/
 │   ├── main.py                 # 入口
 │   ├── interactive.py          # 交互模式
 │   └── __main__.py             # 启动点
+├── utils/                      # 工具模块
+│   └── logger.py               # 日志系统
+├── config/                     # 配置文件
+│   └── config.yaml             # 默认配置
+├── data/                       # 数据存储
+│   ├── knowledge.db            # 知识库
+│   ├── sessions.json           # 会话历史
+│   └── logs/                   # 日志文件
 ├── README.md
 └── LEARNMATE_PRD_v3.md         # 产品需求文档
 ```
 
 ## 配置LLM
 
-默认使用Mock客户端（用于测试）。配置以下环境变量启用真实LLM：
+LearnMate 支持多种 LLM provider，默认使用 Mock 客户端（用于测试）。
+
+### 配置文件方式
+
+配置文件位于 `config/config.yaml`，支持以下配置项：
+
+```yaml
+llm:
+  provider: "minimax"    # openai/anthropic/ollama/minimax/mock
+  api_key: ""          # API密钥
+  base_url: ""         # 自定义API地址
+  model: "MiniMax-M2.5" # 模型名称
+  temperature: 0.7    # 温度参数
+  max_tokens: 1000     # 最大token数
+```
+
+配置文件路径优先级：
+1. `LEARNMATE_CONFIG` 环境变量指定的位置
+2. 项目根目录 `config/config.yaml`
+3. `~/.learnmate/config.yaml`
+
+### MiniMax (推荐)
+
+```bash
+# 编辑 config/config.yaml
+llm:
+  provider: "minimax"
+  api_key: "sk-cp-..."
+  base_url: "https://api.minimaxi.com/anthropic"
+  model: "MiniMax-M2.5"
+```
+
+或使用环境变量：
+```bash
+export ANTHROPIC_AUTH_TOKEN="sk-cp-..."
+export ANTHROPIC_BASE_URL="https://api.minimaxi.com/anthropic"
+export LLM_MODEL="MiniMax-M2.5"
+export LLM_PROVIDER="minimax"
+```
 
 ### OpenAI
+
 ```bash
 export OPENAI_API_KEY="sk-..."
 export LLM_PROVIDER="openai"
@@ -121,6 +169,7 @@ export LLM_MODEL="gpt-4"
 ```
 
 ### Anthropic (Claude)
+
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 export LLM_PROVIDER="anthropic"
@@ -128,10 +177,64 @@ export LLM_MODEL="claude-3-opus-20240229"
 ```
 
 ### Ollama (本地)
+
 ```bash
 export OLLAMA_BASE_URL="http://localhost:11434"
 export LLM_PROVIDER="ollama"
 export LLM_MODEL="llama2"
+```
+
+## 日志系统
+
+LearnMate 提供集中式日志系统，便于排查问题。
+
+### 日志文件位置
+```
+data/logs/learnmate.log
+```
+
+### 日志级别
+通过环境变量控制:
+```bash
+export LEARNMATE_LOG_LEVEL=DEBUG  # DEBUG/INFO/WARNING/ERROR
+```
+
+### 在代码中使用日志
+```python
+from utils import get_logger
+
+logger = get_logger(__name__)
+logger.info("消息")
+logger.debug("调试信息")
+logger.warning("警告")
+logger.error("错误")
+```
+
+## 会话持久化
+
+### 会话保存位置
+```
+data/sessions.json
+```
+
+每次退出时，当前进度会自动保存。下次启动会自动加载。
+
+### 查看会话历史
+```
+/sessions          # 列出最近会话
+/sessions view <id>  # 查看会话详情
+```
+
+### 数据目录结构
+```
+data/
+├── knowledge.db      # 知识库
+├── memory.json       # 长期记忆（已学名词、偏好）
+├── sessions.json     # 会话历史
+├── review.json       # 复习计划
+├── statistics.json   # 统计数据
+└── logs/
+    └── learnmate.log # 运行日志
 ```
 
 ## 版本

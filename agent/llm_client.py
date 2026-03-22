@@ -130,6 +130,58 @@ class OllamaClient(BaseLLMClient):
         return response.json()["message"]["content"]
 
 
+class MiniMaxClient(BaseLLMClient):
+    """MiniMax客户端 (兼容Anthropic API格式)"""
+
+    def __init__(self, api_key: str = None, base_url: str = None, model: str = "MiniMax-M2.5"):
+        self.api_key = api_key or os.getenv("ANTHROPIC_AUTH_TOKEN")
+        self.base_url = base_url or os.getenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
+        self.model = model
+
+    def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
+        import requests
+
+        # 将消息转换为Anthropic格式
+        system = ""
+        anthropic_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system = msg["content"]
+            else:
+                anthropic_messages.append(msg)
+
+        headers = {
+            "x-api-key": self.api_key,
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01"
+        }
+
+        data = {
+            "model": kwargs.get("model", self.model),
+            "max_tokens": kwargs.get("max_tokens", 1000),
+            "system": system,
+            "messages": anthropic_messages
+        }
+
+        response = requests.post(
+            f"{self.base_url}/v1/messages",
+            headers=headers,
+            json=data,
+            timeout=30
+        )
+        response.raise_for_status()
+
+        # MiniMax响应格式与Anthropic不同
+        # content 是数组，可能包含 thinking 和 text 类型
+        content = response.json()["content"]
+        for item in content:
+            if item.get("type") == "text":
+                return item["text"]
+
+        # 如果没有text类型，返回第一个可用的内容
+        return str(content[0])
+
+
 class MockLLMClient(BaseLLMClient):
     """模拟LLM客户端（用于测试）"""
 
@@ -150,7 +202,7 @@ def create_llm_client(provider: str = None, **kwargs) -> BaseLLMClient:
     创建LLM客户端
 
     Args:
-        provider: provider名称 (openai/anthropic/ollama/mock)
+        provider: provider名称 (openai/anthropic/ollama/minimax/mock)
         **kwargs: 其他参数
 
     Returns:
@@ -173,6 +225,12 @@ def create_llm_client(provider: str = None, **kwargs) -> BaseLLMClient:
             base_url=kwargs.get("base_url"),
             model=kwargs.get("model", "llama2")
         )
+    elif provider == "minimax":
+        return MiniMaxClient(
+            api_key=kwargs.get("api_key"),
+            base_url=kwargs.get("base_url"),
+            model=kwargs.get("model", "MiniMax-M2.5")
+        )
     else:
         return MockLLMClient()
 
@@ -185,7 +243,19 @@ def get_llm_client() -> BaseLLMClient:
     """获取全局LLM客户端"""
     global _llm_client
     if _llm_client is None:
-        _llm_client = create_llm_client()
+        # 优先从配置加载
+        try:
+            from agent.config import get_llm_config
+            llm_config = get_llm_config()
+            _llm_client = create_llm_client(
+                provider=llm_config.get("provider"),
+                api_key=llm_config.get("api_key"),
+                base_url=llm_config.get("base_url"),
+                model=llm_config.get("model")
+            )
+        except ImportError:
+            # 如果配置模块不可用，回退到环境变量
+            _llm_client = create_llm_client()
     return _llm_client
 
 
@@ -193,3 +263,9 @@ def set_llm_client(client: BaseLLMClient):
     """设置全局LLM客户端"""
     global _llm_client
     _llm_client = client
+
+
+def reset_llm_client():
+    """重置全局LLM客户端（用于测试或配置更改后重新加载）"""
+    global _llm_client
+    _llm_client = None
