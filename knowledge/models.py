@@ -24,6 +24,72 @@ class Term:
 
 
 @dataclass
+class KnowledgePoint:
+    """知识点（用于 Learn 模式的三锚点结构）"""
+    id: str = ""
+    name: str = ""
+    definition: str = ""
+
+    # 三锚点（必须）
+    topic_anchor: str = ""           # 主题锚点
+    dependency_anchors: List[str] = field(default_factory=list)  # 依赖锚点
+    semantic_anchor: str = ""         # 语义锚点
+
+    # 可选锚点
+    contrast_anchor: str = ""          # 对比关系
+    example_anchor: str = ""          # 举例关系
+
+    source: str = ""
+    source_url: str = ""
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+    is_verified: bool = False
+    is_expired: bool = False
+
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "definition": self.definition,
+            "topic_anchor": self.topic_anchor,
+            "dependency_anchors": self.dependency_anchors,
+            "semantic_anchor": self.semantic_anchor,
+            "contrast_anchor": self.contrast_anchor,
+            "example_anchor": self.example_anchor,
+            "source": self.source,
+            "source_url": self.source_url,
+            "is_verified": self.is_verified,
+            "is_expired": self.is_expired,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat()
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "KnowledgePoint":
+        """从字典创建"""
+        obj = cls(
+            id=data.get("id", ""),
+            name=data.get("name", ""),
+            definition=data.get("definition", ""),
+            topic_anchor=data.get("topic_anchor", ""),
+            dependency_anchors=data.get("dependency_anchors", []),
+            semantic_anchor=data.get("semantic_anchor", ""),
+            contrast_anchor=data.get("contrast_anchor", ""),
+            example_anchor=data.get("example_anchor", ""),
+            source=data.get("source", ""),
+            source_url=data.get("source_url", ""),
+            is_verified=data.get("is_verified", False),
+            is_expired=data.get("is_expired", False)
+        )
+        if "created_at" in data:
+            obj.created_at = datetime.fromisoformat(data["created_at"])
+        if "updated_at" in data:
+            obj.updated_at = datetime.fromisoformat(data["updated_at"])
+        return obj
+
+
+@dataclass
 class Tag:
     """标签"""
     id: str

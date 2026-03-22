@@ -7,8 +7,9 @@
 from typing import Optional, Dict, Any, List
 from enum import Enum
 
-from memory import ShortTermMemory, LongTermMemory
+from memory import ShortTermMemory, LongTermMemory, KnowledgePoint
 from knowledge import KnowledgeDB
+from knowledge.models import Term
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -22,6 +23,8 @@ class DialogueState(Enum):
     REVIEWING = "reviewing"       # 复习中
     GUIDING = "guiding"           # 引导中（苏格拉底模式）
     CONFIRMING = "confirming"      # 确认中
+    DECOMPOSING = "decomposing"    # 主题拆解中（维度选择）
+    SELECTING_KPOINT = "selecting_kpoint"  # 知识点选择
 
 
 class DialogueManager:
@@ -40,6 +43,13 @@ class DialogueManager:
         from agent.socratic import SocraticGuide, SocraticSession
         self.socratic_guide = SocraticGuide()
         self.socratic_session: Optional[SocraticSession] = None
+
+        # Learn 模式专用状态
+        self._pending_theme: Optional[str] = None  # 待拆解的主题
+        self._pending_dimensions: List[str] = []  # 拆解后的维度
+        self._pending_dimension: Optional[str] = None  # 当前选择的维度
+        self._pending_kpoints: List[str] = []  # 当前维度下的知识点
+
         logger.info("DialogueManager initialized")
 
     def start_session(self, mode: str = "learn") -> str:
@@ -58,7 +68,18 @@ class DialogueManager:
             return f"提醒: 您有 {len(due)} 个名词需要复习"
 
         logger.info("No due reviews")
-        return "欢迎使用 LearnMate！请输入要学习的内容。"
+        return """欢迎使用 LearnMate - 智能学习助手！
+
+📖 我能帮你：
+   • 学习具体概念（如：工作量证明、梯度下降）
+   • 拆解大主题（如：区块链、人工智能）
+   • 通过苏格拉底式提问深化理解
+
+🔍 使用方式：
+   直接输入想学习的概念，例如：学习 区块链
+   或输入主题名称，我会帮你拆解为多个学习维度
+
+📌 提示：使用方向键 ↑↓ 选择维度，回车确认"""
 
     def handle_input(self, user_input: str) -> str:
         """处理用户输入"""
@@ -68,6 +89,16 @@ class DialogueManager:
         if self.state == DialogueState.GUIDING and self.socratic_session:
             logger.debug("Currently in GUIDING state, delegating to socratic handler")
             return self._handle_socratic_response(user_input)
+
+        # 检查是否在主题拆解模式
+        if self.state == DialogueState.DECOMPOSING:
+            logger.debug("Currently in DECOMPOSING state, delegating to dimension selection")
+            return self._handle_dimension_selection(user_input)
+
+        # 检查是否在知识点选择模式
+        if self.state == DialogueState.SELECTING_KPOINT:
+            logger.debug("Currently in SELECTING_KPOINT state")
+            return self._handle_kpoint_selection(user_input)
 
         from .intent import IntentRecognizer, Intent
 
@@ -127,36 +158,126 @@ class DialogueManager:
         if not term:
             return "请输入要学习内容，例如：学习 区块链"
 
-        self.current_term = term
+        # 调用 Learn Mode v2
+        return self._handle_learn_v2(term, params)
 
-        # 检查是否已学习
+    def _handle_learn_v2(self, entity: str, params: Dict) -> str:
+        """
+        Learn Mode v2 实现
+
+        流程：
+        1. 歧义检测 - 检查是否是歧义术语
+        2. 主题判断 - 调用 LLM 判断是否为主题
+        3. 知识库查询 - 检查是否已学过
+        4. 信息搜集 - 从 Wikipedia 等获取信息
+        5. 三锚点构建 - 使用 AnchorBuilder
+        6. 存储 - 存入知识库和会话上下文
+        7. Socratic 引导 - 启动苏格拉底会话
+        8. 推荐下一步 - 由 LLM 推断
+        """
+        term = entity
+        logger.info(f"Learn Mode v2: processing '{term}'")
+
+        # 1. 检查是否已学习
         if self.long_memory.is_learned(term):
-            # 已学习，可以查看或复习
             return f"您已经学习过'{term}'了。输入/view {term}查看详情，或/review开始复习。"
 
-        # 添加到已学习
-        self.long_memory.add_learned_term(term)
+        # 获取会话上下文（用于惰性工具）
+        session = self.short_memory.get_current_session()
 
-        # 尝试从 Wikipedia 获取术语信息并使用 LLM 结构化
+        # 如果没有会话，先创建一个
+        if session is None:
+            session = self.short_memory.create_session()
+
+        # 2. 主题判断
+        decomposer = session.get_theme_decomposer()
+        is_theme = decomposer.check_is_theme(term)
+
+        if is_theme:
+            # 主题：需要拆解
+            return self._handle_theme_learning(term, decomposer, session)
+        else:
+            # 具体概念：直接学习
+            return self._handle_concept_learning(term, session)
+
+    def _handle_theme_learning(
+        self,
+        theme: str,
+        decomposer,
+        session
+    ) -> str:
+        """
+        处理主题学习（需要拆解）
+
+        Args:
+            theme: 主题名称
+            decomposer: 主题拆解器
+            session: 会话上下文
+        """
+        logger.info(f"Handling theme learning for: {theme}")
+
+        # 拆解主题为维度
+        dimensions = decomposer.decompose_theme(theme)
+
+        if not dimensions:
+            return f"无法拆解主题'{theme}'，请尝试学习更具体的概念。"
+
+        self._pending_theme = theme
+        self._pending_dimensions = dimensions
+        self._pending_dimension = None
+        self._pending_kpoints = []
+        self.state = DialogueState.DECOMPOSING
+
+        # 构建维度选择菜单（供文本输入 fallback）
+        dim_list = "\n".join(f"  {i+1}. {d}" for i, d in enumerate(dimensions))
+
+        return f"""📚 主题: {theme}
+
+"{theme}"是一个包含多个方面的主题，可以从以下维度学习：
+
+{dim_list}
+
+请选择要学习的维度（输入序号），或输入"取消"退出：
+
+(CLI模式会自动使用方向键选择器)"""
+
+    def _handle_concept_learning(self, term: str, session) -> str:
+        """
+        处理具体概念学习
+
+        Args:
+            term: 概念名称
+            session: 会话上下文
+        """
+        logger.info(f"Handling concept learning for: {term}")
+
+        # 信息搜集
         from features import FetcherManager
         fetcher_manager = FetcherManager()
         term_info = fetcher_manager.fetch_and_enhance(term)
 
-        # 存入知识库
-        from knowledge import Term
-        if term_info:
-            term_obj = Term(
-                id="",
-                name=term,
-                definition=term_info.structured_definition or term_info.definition,
-                summary=term_info.summary,
-                source=term_info.source
-            )
-            source_note = f"\n\n📚 信息来源: {term_info.source}"
-        else:
-            term_obj = Term(id="", name=term, definition=f"学习: {term}")
-            source_note = ""
+        definition = term_info.structured_definition or term_info.definition if term_info else f"学习: {term}"
+        source = term_info.source if term_info else ""
+        source_url = term_info.url if term_info else ""
 
+        # 三锚点构建
+        anchor_builder = session.get_anchor_builder()
+        kp = anchor_builder.build_knowledge_point(
+            term_name=term,
+            definition=definition,
+            source=source,
+            source_url=source_url
+        )
+
+        # 存入知识库（使用 Term 对象）
+        term_obj = Term(
+            id=kp.id,
+            name=kp.name,
+            definition=kp.definition,
+            summary=kp.semantic_anchor or "",  # 使用语义锚点作为摘要
+            source=kp.source or "manual",
+            source_url=kp.source_url or ""
+        )
         self.knowledge_db.add_term(term_obj)
 
         # 加入复习计划
@@ -164,55 +285,514 @@ class DialogueManager:
         scheduler = ReviewScheduler()
         scheduler.add_term(term_obj.id, term)
 
+        # 记录到会话上下文
+        session_kp = KnowledgePoint(
+            id=kp.id,
+            name=kp.name,
+            definition=kp.definition,
+            topic_anchor=kp.topic_anchor,
+            dependency_anchors=kp.dependency_anchors,
+            semantic_anchor=kp.semantic_anchor,
+            contrast_anchor=kp.contrast_anchor,
+            example_anchor=kp.example_anchor,
+            source=kp.source,
+            source_url=kp.source_url
+        )
+        session.add_learned_knowledge_point(session_kp)
+
+        # 添加到已学习
+        self.long_memory.add_learned_term(term)
+
         # 记录统计
         from features import StatisticsCollector
         stats = StatisticsCollector()
         stats.record_new_term()
 
+        # 格式化三锚点展示
+        anchors_display = self._format_knowledge_point(kp)
+
         # 启动苏格拉底会话
         self.state = DialogueState.GUIDING
-        self.socratic_session = self.socratic_guide.start_session(term, term_obj.definition)
+        self.socratic_session = self.socratic_guide.start_session(term, definition)
 
         # 获取第一个问题
         first_question = self.socratic_guide.get_first_question(self.socratic_session)
 
-        return f"""🤔 开始学习: {term}{source_note}
+        source_note = f"\n\n📚 信息来源: {source}" if source else ""
+
+        return f"""{anchors_display}
 
 {first_question}
 
 (输入您的回答继续，或输入'退出'结束学习)"""
 
+    def _handle_dimension_selection(self, selection: str) -> str:
+        """
+        处理维度选择（文本输入 fallback）
+
+        Args:
+            selection: 用户选择（序号）
+        """
+        if selection.lower() in ["取消", "cancel", "q"]:
+            return self._cancel_theme_learning()
+
+        dimensions = self._pending_dimensions
+
+        try:
+            idx = int(selection) - 1
+            if idx < 0 or idx >= len(dimensions):
+                return f"无效的选择，请输入1-{len(dimensions)}之间的序号"
+        except ValueError:
+            return f"无效输入，请输入序号"
+
+        return self._do_select_dimension(idx)
+
+    def _do_select_dimension(self, idx: int) -> List[str]:
+        """
+        执行维度选择
+
+        Args:
+            idx: 维度索引（0-based）
+
+        Returns:
+            知识点列表，或错误消息
+        """
+        theme = self._pending_theme
+        dimensions = self._pending_dimensions
+
+        if idx < 0 or idx >= len(dimensions):
+            return [f"无效的维度索引: {idx}"]
+
+        dimension = dimensions[idx]
+        self._pending_dimension = dimension
+
+        logger.info(f"Selected dimension: {dimension}")
+
+        # 获取该维度的知识点
+        session = self.short_memory.get_current_session()
+        decomposer = session.get_theme_decomposer()
+        kpoints = decomposer.get_dimension_kpoints(dimension, theme)
+
+        if not kpoints:
+            kpoints = [dimension]
+
+        self._pending_kpoints = kpoints
+        self.state = DialogueState.SELECTING_KPOINT
+
+        return kpoints
+
+    def select_dimension(self, idx: int) -> List[str]:
+        """
+        选择维度（供 CLI 调用）
+
+        Args:
+            idx: 维度索引（0-based）
+
+        Returns:
+            知识点列表
+        """
+        return self._do_select_dimension(idx)
+
+    def select_kpoint(self, idx: int) -> str:
+        """
+        选择知识点并启动学习
+
+        Args:
+            idx: 知识点索引
+
+        Returns:
+            学习开始信息
+        """
+        kpoints = self._pending_kpoints
+        theme = self._pending_theme
+        dimension = self._pending_dimension
+
+        if idx < 0 or idx >= len(kpoints):
+            return f"无效的知识点索引: {idx}"
+
+        kp_name = kpoints[idx]
+        logger.info(f"Starting learning for: {kp_name}")
+
+        # 获取会话上下文
+        session = self.short_memory.get_current_session()
+
+        # 启动该知识点的学习
+        return self._start_kpoint_learning(kp_name, theme, dimension, session)
+
+    def _start_kpoint_learning(self, kp_name: str, theme: str, dimension: str, session) -> str:
+        """
+        启动知识点学习
+
+        Args:
+            kp_name: 知识点名称
+            theme: 所属主题
+            dimension: 所属维度
+            session: 会话上下文
+        """
+        # 信息搜集
+        from features import FetcherManager
+        fetcher_manager = FetcherManager()
+        term_info = fetcher_manager.fetch_and_enhance(kp_name)
+
+        definition = term_info.structured_definition or term_info.definition if term_info else f"{theme} - {dimension}维度"
+        source = term_info.source if term_info else ""
+        source_url = term_info.url if term_info else ""
+
+        # 三锚点构建
+        anchor_builder = session.get_anchor_builder()
+        kp = anchor_builder.build_knowledge_point(
+            term_name=kp_name,
+            definition=definition,
+            source=source,
+            source_url=source_url
+        )
+
+        # 存入知识库
+        term_obj = Term(
+            id=kp.id,
+            name=kp.name,
+            definition=kp.definition,
+            summary=kp.semantic_anchor or "",
+            source=source or "theme_decomposition",
+            source_url=source_url or ""
+        )
+        self.knowledge_db.add_term(term_obj)
+
+        # 加入复习计划
+        from review import ReviewScheduler
+        scheduler = ReviewScheduler()
+        scheduler.add_term(term_obj.id, kp_name)
+
+        # 记录到会话上下文
+        session_kp = KnowledgePoint(
+            id=kp.id,
+            name=kp.name,
+            definition=kp.definition,
+            topic_anchor=kp.topic_anchor,
+            dependency_anchors=kp.dependency_anchors,
+            semantic_anchor=kp.semantic_anchor,
+            contrast_anchor=kp.contrast_anchor,
+            example_anchor=kp.example_anchor,
+            source=kp.source,
+            source_url=kp.source_url
+        )
+        session.add_learned_knowledge_point(session_kp)
+
+        # 添加到已学习
+        self.long_memory.add_learned_term(kp_name)
+
+        # 记录统计
+        from features import StatisticsCollector
+        stats = StatisticsCollector()
+        stats.record_new_term()
+
+        # 格式化三锚点展示
+        anchors_display = self._format_knowledge_point(kp)
+
+        # 启动苏格拉底会话
+        self.state = DialogueState.GUIDING
+        self.socratic_session = self.socratic_guide.start_session(kp_name, definition)
+
+        # 获取第一个问题
+        first_question = self.socratic_guide.get_first_question(self.socratic_session)
+
+        source_note = f"\n\n📚 信息来源: {source}" if source else ""
+
+        return f"""{anchors_display}{source_note}
+
+{first_question}
+
+(输入您的回答继续，或输入'退出'结束学习)"""
+
+    def _handle_kpoint_selection(self, selection: str) -> str:
+        """
+        处理知识点选择（文本输入 fallback）
+
+        Args:
+            selection: 用户选择
+        """
+        if selection.lower() in ["取消", "cancel", "q"]:
+            return self._cancel_kpoint_selection()
+
+        kpoints = self._pending_kpoints
+
+        try:
+            idx = int(selection) - 1
+            if idx < 0 or idx >= len(kpoints):
+                return f"无效的选择，请输入1-{len(kpoints)}之间的序号"
+        except ValueError:
+            return f"无效输入，请输入序号"
+
+        return self._do_select_kpoint(idx)
+
+    def _do_select_kpoint(self, idx: int) -> str:
+        """
+        执行知识点选择并启动学习
+
+        Args:
+            idx: 知识点索引（0-based）
+        """
+        kpoints = self._pending_kpoints
+        theme = self._pending_theme
+        dimension = self._pending_dimension
+
+        if idx < 0 or idx >= len(kpoints):
+            return f"无效的知识点索引: {idx}"
+
+        kp_name = kpoints[idx]
+        logger.info(f"Starting learning for: {kp_name}")
+
+        # 获取会话上下文
+        session = self.short_memory.get_current_session()
+
+        # 启动该知识点的学习
+        return self._start_kpoint_learning(kp_name, theme, dimension, session)
+
+    def _cancel_theme_learning(self) -> str:
+        """取消主题学习"""
+        self.state = DialogueState.IDLE
+        self._pending_theme = None
+        self._pending_dimensions = []
+        self._pending_dimension = None
+        self._pending_kpoints = []
+        return "已取消主题学习。"
+
+    def _cancel_kpoint_selection(self) -> str:
+        """取消知识点选择，返回维度选择"""
+        self.state = DialogueState.DECOMPOSING
+        self._pending_dimension = None
+        self._pending_kpoints = []
+        dimensions = self._pending_dimensions
+        dim_list = "\n".join(f"  {i+1}. {d}" for i, d in enumerate(dimensions))
+        return f"""📚 主题: {self._pending_theme}
+
+请选择要学习的维度：
+
+{dim_list}
+
+(输入序号选择，或输入'取消'退出主题学习)"""
+
+    def _format_knowledge_point(self, kp) -> str:
+        """格式化知识点展示"""
+        lines = [f"📖 开始学习: {kp.name}"]
+
+        if kp.topic_anchor:
+            lines.append(f"\n🎯 主题锚点: {kp.topic_anchor}")
+
+        if kp.dependency_anchors:
+            deps = ", ".join(kp.dependency_anchors)
+            lines.append(f"\n📚 依赖锚点: {deps}")
+
+        if kp.semantic_anchor:
+            lines.append(f"\n💡 语义锚点: {kp.semantic_anchor}")
+
+        if kp.contrast_anchor:
+            lines.append(f"\n⚖️ 对比锚点: {kp.contrast_anchor}")
+
+        if kp.example_anchor:
+            lines.append(f"\n🧪 举例锚点: {kp.example_anchor}")
+
+        return "\n".join(lines)
+
+    # 供 CLI 调用的辅助方法
+
+    def needs_dimension_selection(self) -> bool:
+        """检查是否需要维度选择"""
+        return self.state == DialogueState.DECOMPOSING and self._pending_dimensions
+
+    def needs_kpoint_selection(self) -> bool:
+        """检查是否需要知识点选择"""
+        return self.state == DialogueState.SELECTING_KPOINT and self._pending_kpoints
+
+    def get_pending_dimensions(self) -> List[str]:
+        """获取待选择的维度列表"""
+        return self._pending_dimensions
+
+    def get_pending_theme(self) -> Optional[str]:
+        """获取待学习的主题"""
+        return self._pending_theme
+
+    def get_pending_dimension(self) -> Optional[str]:
+        """获取当前选择的维度"""
+        return self._pending_dimension
+
+    def get_pending_kpoints(self) -> List[str]:
+        """获取待选择的知识点列表"""
+        return self._pending_kpoints
+
+    def select_dimension(self, index: int) -> List[str]:
+        """
+        选择维度并获取知识点列表（供 CLI 选择器调用）
+
+        Args:
+            index: 维度索引（0-based）
+
+        Returns:
+            知识点列表，或错误消息
+        """
+        if not self._pending_dimensions or index < 0 or index >= len(self._pending_dimensions):
+            return [f"无效的维度索引: {index}"]
+
+        return self._handle_dimension_selection(str(index + 1))
+
+    def select_kpoint(self, index: int) -> str:
+        """
+        选择知识点并启动学习（供 CLI 选择器调用）
+
+        Args:
+            index: 知识点索引（0-based）
+
+        Returns:
+            学习开始信息
+        """
+        if index < 0 or index >= len(self._pending_kpoints):
+            return f"无效的知识点索引: {index}"
+        return self._handle_kpoint_selection(str(index + 1))
+
+    def handle_continue_choice(self, choice: str) -> str:
+        """
+        处理继续/结束选择
+
+        Args:
+            choice: 用户选择 (1=继续该维度, 2=其他维度, 3=结束)
+
+        Returns:
+            响应信息
+        """
+        if choice == "1":
+            # 继续该维度的其他知识点
+            return self._show_kpoint_selector()
+        elif choice == "2":
+            # 返回维度选择
+            self.state = DialogueState.DECOMPOSING
+            self._pending_dimension = None
+            self._pending_kpoints = []
+            return self._show_dimension_selector_text()
+        elif choice == "3":
+            # 结束主题学习
+            return self._end_theme_learning()
+        else:
+            return "无效选择，请输入 1/2/3"
+
+    def _end_theme_learning(self) -> str:
+        """结束主题学习"""
+        theme = self._pending_theme
+        self.state = DialogueState.IDLE
+        self._pending_theme = None
+        self._pending_dimensions = []
+        self._pending_dimension = None
+        self._pending_kpoints = []
+        return f"""✅ 主题学习结束！
+
+📚 {theme}
+
+已返回主界面。输入 /list 查看所有已学内容。"""
+
+    def select_all_dimensions(self) -> str:
+        """选择所有维度"""
+        return self._handle_dimension_selection("全部")
+
     def _handle_socratic_response(self, user_input: str) -> str:
         """处理苏格拉底引导中的用户响应"""
         # 检查退出
         if user_input.lower() in ["退出", "exit", "quit", "q"]:
-            # 结束会话
-            summary = self.socratic_guide.complete_session(self.socratic_session)
-            self.socratic_session = None
-            self.state = DialogueState.IDLE
-            return summary
+            return self._handle_learning_exit()
 
-        # 检查是否要跳过或继续
+        # 检查是否要跳过
         if user_input.lower() in ["跳过", "skip", "继续", "next"]:
             if self.socratic_guide.should_continue(self.socratic_session):
                 next_q = self.socratic_guide.get_next_question(self.socratic_session, "跳过")
                 return f"\n{next_q}\n(输入您的回答继续，或输入'退出'结束学习)"
             else:
-                summary = self.socratic_guide.complete_session(self.socratic_session)
-                self.socratic_session = None
-                self.state = DialogueState.IDLE
-                return summary
+                return self._complete_kpoint_learning()
 
         # 获取下一个问题
         if self.socratic_guide.should_continue(self.socratic_session):
             next_question = self.socratic_guide.get_next_question(self.socratic_session, user_input)
             return f"\n{next_question}\n\n(输入您的回答继续，或输入'退出'结束学习)"
         else:
-            # 完成学习
-            summary = self.socratic_guide.generate_ai_summary(self.socratic_session)
-            self.socratic_session = None
+            # 完成当前知识点学习，询问是否继续
+            return self._complete_kpoint_learning()
+
+    def _handle_learning_exit(self) -> str:
+        """处理学习退出"""
+        summary = self.socratic_guide.complete_session(self.socratic_session)
+        self.socratic_session = None
+
+        # 检查是否在主题学习流程中
+        if self._pending_kpoints:
+            # 返回知识点选择
+            return self._show_kpoint_selector()
+        elif self._pending_dimensions:
+            # 返回维度选择
+            self.state = DialogueState.DECOMPOSING
+            return self._show_dimension_selector_text()
+        else:
+            # 完全结束
             self.state = DialogueState.IDLE
-            return summary
+            return f"{summary}\n\n已退出学习。"
+
+    def _complete_kpoint_learning(self) -> str:
+        """完成知识点学习，询问是否继续"""
+        summary = self.socratic_guide.generate_ai_summary(self.socratic_session)
+        self.socratic_session = None
+
+        # 检查是否在主题学习流程中
+        if self._pending_kpoints:
+            # 返回知识点选择或结束
+            return self._ask_continue_or_end(summary)
+        else:
+            # 独立概念学习，完全结束
+            self.state = DialogueState.IDLE
+            return f"{summary}\n\n知识点学习完成！"
+
+    def _ask_continue_or_end(self, summary: str) -> str:
+        """询问继续还是结束"""
+        return f"""{summary}
+
+✅ 该知识点学习完成！
+
+请选择：
+  1. 继续学习该维度的其他知识点
+  2. 学习其他维度
+  3. 结束主题学习
+
+(输入 1/2/3 选择，或输入其他内容作为新命令)"""
+
+    def _show_kpoint_selector(self) -> str:
+        """显示知识点选择器"""
+        kpoints = self._pending_kpoints
+        theme = self._pending_theme
+        dimension = self._pending_dimension
+
+        kp_list = "\n".join(f"  {i+1}. {k}" for i, k in enumerate(kpoints))
+
+        return f"""📚 主题: {theme} > {dimension}
+
+该维度下有以下知识点，请选择：
+
+{kp_list}
+
+  0. 其他（输入其他需求或命令）
+
+(输入序号选择)"""
+
+    def _show_dimension_selector_text(self) -> str:
+        """显示维度选择器（文本模式）"""
+        theme = self._pending_theme
+        dimensions = self._pending_dimensions
+
+        dim_list = "\n".join(f"  {i+1}. {d}" for i, d in enumerate(dimensions))
+
+        return f"""📚 主题: {theme}
+
+请选择要学习的维度：
+
+{dim_list}
+
+  0. 其他（输入其他需求或命令）
+
+(输入序号选择)"""
 
     def _handle_ask(self, question: str) -> str:
         """处理问答"""
