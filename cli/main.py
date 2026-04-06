@@ -4,6 +4,7 @@ LearnMate CLI 启动入口
 
 import sys
 import argparse
+import asyncio
 from typing import Optional
 
 from .interactive import InteractiveMode
@@ -46,12 +47,23 @@ def main():
         help="显示版本信息"
     )
 
+    parser.add_argument(
+        "--agent",
+        action="store_true",
+        help="使用新的Agent架构"
+    )
+
     args = parser.parse_args()
 
     if args.version:
         print("LearnMate v0.1.0")
         print("智能学习助手 - 苏格拉底式引导学习")
         return 0
+
+    # Agent 模式
+    if args.agent:
+        from agent.learn_agent import run_agent
+        return asyncio.run(run_agent())
 
     # 交互模式
     if args.command == "interactive" or args.command is None:
