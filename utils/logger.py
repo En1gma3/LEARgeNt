@@ -35,6 +35,7 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 # 日志目录
 LOG_DIR = Path("./data/logs")
 LOG_FILE = LOG_DIR / "learnmate.log"
+LLM_LOG_FILE = LOG_DIR / "llm.log"
 
 # 确保日志目录存在
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -165,6 +166,44 @@ def set_log_level(level: str):
 def get_log_file_path() -> Path:
     """获取日志文件路径"""
     return LOG_FILE
+
+
+def get_llm_logger() -> logging.Logger:
+    """
+    获取专用于LLM请求的logger
+
+    所有LLM请求都会被记录到这个单独的日志文件
+
+    Returns:
+        logging.Logger: LLM日志记录器
+    """
+    llm_logger_name = "learnmate.llm"
+    if llm_logger_name not in _loggers:
+        llm_logger = logging.getLogger(llm_logger_name)
+
+        # 避免重复添加 handler
+        if not llm_logger.handlers:
+            llm_logger.setLevel(logging.DEBUG)
+
+            # 专用文件 Handler
+            llm_file_handler = RotatingFileHandler(
+                LLM_LOG_FILE,
+                maxBytes=10 * 1024 * 1024,  # 10MB
+                backupCount=10,
+                encoding="utf-8"
+            )
+            llm_file_handler.setLevel(logging.DEBUG)
+
+            # 详细格式，包含时间戳
+            llm_format = "%(asctime)s | %(message)s"
+            llm_formatter = logging.Formatter(llm_format, DATE_FORMAT)
+            llm_file_handler.setFormatter(llm_formatter)
+
+            llm_logger.addHandler(llm_file_handler)
+
+        _loggers[llm_logger_name] = llm_logger
+
+    return _loggers[llm_logger_name]
 
 
 def cleanup_old_logs(days: int = 7):
