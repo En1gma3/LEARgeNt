@@ -212,12 +212,14 @@ class MiniMaxClient(BaseLLMClient):
         model = kwargs.get("model", self.model)
         max_tokens = kwargs.get("max_tokens", 1000)
 
-        message = client.messages.create(
+        # 使用流式 API 以支持长时间操作
+        with client.messages.stream(
             model=model,
             max_tokens=max_tokens,
             system=system if system else None,
             messages=anthropic_messages
-        )
+        ) as stream:
+            message = stream.get_final_message()
 
         # 解析响应
         for block in message.content:
@@ -230,6 +232,61 @@ class MiniMaxClient(BaseLLMClient):
         result = str(message.content[0])
         self._log_response(result, "minimax")
         return result
+
+    def chat_with_tools(self, messages: List[Dict[str, str]], tools: List[Dict], **kwargs) -> Dict[str, Any]:
+        """MiniMax (Anthropic SDK) 支持 tool_use"""
+        self._log_request(messages, "minimax")
+
+        system = ""
+        anthropic_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system = msg["content"]
+            else:
+                anthropic_messages.append({
+                    "role": msg["role"],
+                    "content": [{
+                        "type": "text",
+                        "text": msg["content"]
+                    }]
+                })
+
+        client = self._get_client()
+        model = kwargs.get("model", self.model)
+        max_tokens = kwargs.get("max_tokens", 4096)
+
+        # 转换 tools 格式
+        anthropic_tools = []
+        for tool in tools:
+            func = tool.get("function", {})
+            anthropic_tools.append({
+                "name": func.get("name"),
+                "description": func.get("description"),
+                "input_schema": func.get("parameters", {"type": "object"})
+            })
+
+        # 使用流式 API 处理长时间请求
+        with client.messages.stream(
+            model=model,
+            max_tokens=max_tokens,
+            system=system if system else None,
+            messages=anthropic_messages,
+            tools=anthropic_tools if anthropic_tools else None
+        ) as stream:
+            message = stream.get_final_message()
+
+        # 记录原始响应 blocks
+        self._log_response(message.content, "minimax")
+
+        # 检查最后一个 block
+        last_block = message.content[-1]
+        if last_block.type == "tool_use":
+            return {
+                "type": "function",
+                "name": last_block.name,
+                "arguments": last_block.input
+            }
+        return {"type": "text", "content": str(last_block.text) if hasattr(last_block, "text") else str(last_block)}
 
 
 class MockLLMClient(BaseLLMClient):
