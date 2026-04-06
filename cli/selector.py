@@ -14,6 +14,16 @@ try:
 except ImportError:
     readchar = None
 
+# 日志
+try:
+    from utils import get_logger
+except ImportError:
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
+    get_logger = lambda name: logging.getLogger(name)
+
+logger = get_logger(__name__)
+
 
 class ArrowSelector:
     """终端箭头键选择组件"""
@@ -23,7 +33,8 @@ class ArrowSelector:
         items: List[str],
         title: str = None,
         multi_column: bool = False,
-        columns: int = 3
+        columns: int = 3,
+        initial_index: int = 0
     ):
         """
         Args:
@@ -31,13 +42,14 @@ class ArrowSelector:
             title: 菜单标题
             multi_column: 是否多列布局
             columns: 列数（多列模式）
+            initial_index: 初始选中索引
         """
         self.items = items
         self.title = title
         self.multi_column = multi_column
         self.columns = columns if multi_column else 1
 
-        self._selected_index = 0
+        self._selected_index = initial_index
         self._running = False
 
     def run(self) -> Optional[int]:
@@ -256,3 +268,52 @@ class DimensionSelector(ArrowSelector):
             title="请选择方面：",
             multi_column=False
         )
+
+
+def readline_with_chinese(prompt: str = "> ") -> str:
+    """
+    支持中文输入的 readline 风格函数
+
+    使用 readchar 逐字符读取，自行处理退格键
+    解决 Python input() 在中文输入时的兼容性问题
+    """
+    if readchar is None:
+        # 降级到普通 input
+        return input(prompt).strip()
+
+    # 检查是否 TTY，非 TTY 使用普通 input
+    if not sys.stdin.isatty():
+        return input(prompt).strip()
+
+    print(prompt, end="", flush=True)
+    buffer = []
+
+    while True:
+        key = readchar.readkey()
+        logger.debug(f"[readline] key={repr(key)}, buffer={buffer}")
+
+        if key in ("\r", "\n"):
+            # 回车：输出换行并返回
+            print()
+            return "".join(buffer)
+
+        elif key in ("\x7f", "\b"):  # DEL (Backspace) 或 BS
+            if buffer:
+                buffer.pop()
+                # 清除当前行并重新显示
+                sys.stdout.write("\r\033[K")  # 回车 + 清除到行尾
+                sys.stdout.write(prompt)
+                sys.stdout.write("".join(buffer))
+                sys.stdout.flush()
+            # else: 已经空了，忽略
+
+        elif len(key) == 1 and ord(key) < 32:
+            # 控制字符，忽略
+            pass
+
+        else:
+            # 普通字符（包括中文）添加到缓冲区
+            buffer.append(key)
+            # 立即显示字符
+            sys.stdout.write(key)
+            sys.stdout.flush()

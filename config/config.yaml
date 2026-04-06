@@ -8,16 +8,16 @@ llm:
   provider: "minimax"
 
   # API密钥 (可通过环境变量 ANTHROPIC_AUTH_TOKEN 覆盖)
-  api_key: ""
+  api_key: "sk-cp-ZH2hBVKALxVZlPx5CgR9SDVRZ2soA4YWbv1W4vc5zTHLp4k37gcOzXfvv562v0VUZhKpDYFpGAEe951pRll0HvxjxTMzYo1BAE30gjQqiIblNINQr1RStpM"
 
   # 自定义API地址 (可通过环境变量 ANTHROPIC_BASE_URL 覆盖)
-  base_url: ""
+  base_url: "https://api.minimaxi.com/anthropic"
 
   # 模型名称 (可通过环境变量 LLM_MODEL 覆盖)
-  model: "MiniMax-M2.5"
+  model: "MiniMax-M2.7"
 
   # 温度参数
   temperature: 0.7
 
   # 最大token数
-  max_tokens: 1000
+  max_tokens: 10000000

@@ -25,6 +25,9 @@ class DialogueState(Enum):
     CONFIRMING = "confirming"      # 确认中
     DECOMPOSING = "decomposing"    # 主题拆解中（维度选择）
     SELECTING_KPOINT = "selecting_kpoint"  # 知识点选择
+    EXPLAINING = "explaining"      # 概念讲解中
+    Q_A_LOOP = "q_a_loop"        # 用户主导问答循环
+    SUMMARIZING = "summarizing"   # 总结中
 
 
 class DialogueManager:
@@ -84,6 +87,21 @@ class DialogueManager:
     def handle_input(self, user_input: str) -> str:
         """处理用户输入"""
         logger.debug(f"handle_input called with: {user_input[:50]}...")
+
+        # 检查是否在讲解模式
+        if self.state == DialogueState.EXPLAINING and self.socratic_session:
+            logger.debug("Currently in EXPLAINING state")
+            return self._handle_explaining_response(user_input)
+
+        # 检查是否在用户主导问答循环模式
+        if self.state == DialogueState.Q_A_LOOP and self.socratic_session:
+            logger.debug("Currently in Q_A_LOOP state")
+            return self._handle_qa_loop(user_input)
+
+        # 检查是否在总结模式
+        if self.state == DialogueState.SUMMARIZING and self.socratic_session:
+            logger.debug("Currently in SUMMARIZING state")
+            return self._handle_summarizing(user_input)
 
         # 检查是否在苏格拉底引导模式
         if self.state == DialogueState.GUIDING and self.socratic_session:
@@ -243,7 +261,7 @@ class DialogueManager:
 
     def _handle_concept_learning(self, term: str, session) -> str:
         """
-        处理具体概念学习
+        处理具体概念学习 - 讲解优先模式
 
         Args:
             term: 概念名称
@@ -308,23 +326,38 @@ class DialogueManager:
         stats = StatisticsCollector()
         stats.record_new_term()
 
-        # 格式化三锚点展示
-        anchors_display = self._format_knowledge_point(kp)
-
-        # 启动苏格拉底会话
-        self.state = DialogueState.GUIDING
+        # 启动讲解模式会话
+        self.state = DialogueState.EXPLAINING
         self.socratic_session = self.socratic_guide.start_session(term, definition)
 
-        # 获取第一个问题
-        first_question = self.socratic_guide.get_first_question(self.socratic_session)
+        # 存储锚点供后续使用
+        self.socratic_session.anchors = {
+            'topic_anchor': kp.topic_anchor,
+            'dependency_anchors': kp.dependency_anchors,
+            'semantic_anchor': kp.semantic_anchor,
+            'contrast_anchor': kp.contrast_anchor,
+            'example_anchor': kp.example_anchor
+        }
+
+        # 生成自然语言讲解
+        explanation = self.socratic_guide.generate_explanation(
+            term=term,
+            definition=definition,
+            anchors=self.socratic_session.anchors
+        )
 
         source_note = f"\n\n📚 信息来源: {source}" if source else ""
 
-        return f"""{anchors_display}
+        return f"""{explanation}{source_note}
 
-{first_question}
+---
 
-(输入您的回答继续，或输入'退出'结束学习)"""
+请选择：
+  1. 有问题想问
+  2. 继续学习其他
+  3. 帮我总结一下
+
+(输入 1/2/3 选择，或直接输入你的问题)"""
 
     def _handle_dimension_selection(self, selection: str) -> str:
         """
@@ -421,7 +454,7 @@ class DialogueManager:
 
     def _start_kpoint_learning(self, kp_name: str, theme: str, dimension: str, session) -> str:
         """
-        启动知识点学习
+        启动知识点学习 - 讲解优先模式
 
         Args:
             kp_name: 知识点名称
@@ -486,23 +519,42 @@ class DialogueManager:
         stats = StatisticsCollector()
         stats.record_new_term()
 
-        # 格式化三锚点展示
-        anchors_display = self._format_knowledge_point(kp)
-
-        # 启动苏格拉底会话
-        self.state = DialogueState.GUIDING
+        # 启动讲解模式会话
+        self.state = DialogueState.EXPLAINING
         self.socratic_session = self.socratic_guide.start_session(kp_name, definition)
 
-        # 获取第一个问题
-        first_question = self.socratic_guide.get_first_question(self.socratic_session)
+        logger.info(f"[LEARN] 开始学习知识点: {kp_name}, 状态: EXPLAINING")
+
+        # 存储锚点供后续使用
+        self.socratic_session.anchors = {
+            'topic_anchor': kp.topic_anchor,
+            'dependency_anchors': kp.dependency_anchors,
+            'semantic_anchor': kp.semantic_anchor,
+            'contrast_anchor': kp.contrast_anchor,
+            'example_anchor': kp.example_anchor
+        }
+
+        # 生成自然语言讲解
+        logger.debug(f"[LEARN] 调用 generate_explanation, term={kp_name}")
+        explanation = self.socratic_guide.generate_explanation(
+            term=kp_name,
+            definition=definition,
+            anchors=self.socratic_session.anchors
+        )
+        logger.info(f"[LEARN] 讲解生成完成, 长度={len(explanation)}")
 
         source_note = f"\n\n📚 信息来源: {source}" if source else ""
 
-        return f"""{anchors_display}{source_note}
+        return f"""{explanation}{source_note}
 
-{first_question}
+---
 
-(输入您的回答继续，或输入'退出'结束学习)"""
+请选择：
+  1. 有问题想问
+  2. 继续学习其他
+  3. 帮我总结一下
+
+(输入 1/2/3 选择，或直接输入你的问题)"""
 
     def _handle_kpoint_selection(self, selection: str) -> str:
         """
@@ -1026,3 +1078,351 @@ LearnMate 帮助
     def get_conversation_history(self) -> List[Dict[str, str]]:
         """获取对话历史"""
         return self.short_memory.get_conversation_history()
+
+    # ============================================================
+    # 新方法：讲解优先模式
+    # ============================================================
+
+    def _is_question(self, text: str) -> bool:
+        """简单判断输入是否为问题"""
+        if not text:
+            return False
+        text = text.strip()
+        # 问题标记
+        question_markers = ['?', '？', '什么', '怎么', '为什么', '是不是', '有没有', '如何', '哪']
+        return any(marker in text for marker in question_markers)
+
+    def _handle_explaining_response(self, user_input: str) -> str:
+        """
+        处理讲解阶段的用户回应
+
+        用户可以选择：
+        1. 有问题想问 -> 进入问答模式
+        2. 继续学习其他 -> 结束当前学习
+        3. 帮我总结 -> 生成总结
+        或者直接输入问题
+        """
+        user_input = user_input.strip()
+        term = self.socratic_session.term if self.socratic_session else "unknown"
+
+        logger.info(f"[EXPLAINING] 用户输入: {user_input[:50]}..., term={term}")
+
+        # 如果是退出命令
+        if user_input.lower() in ['退出', 'exit', 'quit', 'q']:
+            logger.info(f"[EXPLAINING] 用户退出, term={term}")
+            return self._handle_learning_exit()
+
+        # 如果用户输入问题，进入问答模式
+        if self._is_question(user_input):
+            logger.info(f"[EXPLAINING] 检测到问题，进入 Q&A, term={term}")
+            return self._answer_user_question(user_input)
+
+        # 处理菜单选择
+        if user_input == "1":
+            # 用户选择问问题 -> 先要求解释，然后进入问答
+            logger.info(f"[EXPLAINING] 用户选择菜单1（问问题）, term={term}")
+            return "好的，请先用自己的话解释一下这个概念，然后我再回答你的问题："
+
+        if user_input == "2":
+            # 继续学习其他
+            logger.info(f"[EXPLAINING] 用户选择菜单2（继续学习）, term={term}")
+            return self._finalize_learning_and_prompt_next()
+
+        if user_input == "3":
+            # 总结
+            logger.info(f"[EXPLAINING] 用户选择菜单3（总结）, term={term}, 状态 -> SUMMARIZING")
+            self.state = DialogueState.SUMMARIZING
+            return self._generate_structured_summary()
+
+        # 用户输入了解释，评估理解程度
+        logger.info(f"[EXPLAINING] 评估理解程度, term={term}")
+        level, feedback = self.socratic_guide.judge_comprehension(
+            term=self.socratic_session.term,
+            definition=self.socratic_session.definition,
+            user_explanation=user_input,
+            message_history=self.socratic_session.message_history
+        )
+        logger.info(f"[EXPLAINING] 理解程度: level={level}, feedback={feedback[:50]}...")
+
+        # 如果反馈说"无需指出"，说明理解正确
+        if "无需指出" in feedback:
+            # 理解充分，进入用户主导循环
+            self.state = DialogueState.Q_A_LOOP
+            logger.info(f"[EXPLAINING] 理解充分, 状态 -> Q_A_LOOP, term={term}")
+            return self._ask_if_more_questions()
+        elif level >= 0.7:
+            # 理解充分，进入用户主导循环
+            self.state = DialogueState.Q_A_LOOP
+            logger.info(f"[EXPLAINING] 理解充分(level={level}), 状态 -> Q_A_LOOP, term={term}")
+            return self._ask_if_more_questions()
+            return self._ask_if_more_questions()
+        else:
+            # 理解不充分，提供针对性补充讲解
+            return self._provide_remediation(user_input, level, feedback)
+
+    def _answer_user_question(self, question: str) -> str:
+        """回答用户的具体问题 - 维护消息历史"""
+        anchors = self.socratic_session.anchors or {}
+        term = self.socratic_session.term
+
+        logger.info(f"[Q&A] 用户提问, term={term}, question={question[:50]}...")
+        logger.debug(f"[Q&A] 当前消息历史长度: {len(self.socratic_session.message_history)}")
+
+        # 添加用户问题到消息历史
+        self.socratic_session.message_history.append({
+            "role": "user",
+            "content": question
+        })
+
+        logger.info(f"[Q&A] 调用 answer_question LLM, term={term}")
+        answer = self.socratic_guide.answer_question(
+            term=self.socratic_session.term,
+            anchors=anchors,
+            question=question,
+            message_history=self.socratic_session.message_history
+        )
+        logger.info(f"[Q&A] LLM回答完成, 长度={len(answer)}, term={term}")
+
+        # 添加 AI 回答到消息历史
+        self.socratic_session.message_history.append({
+            "role": "assistant",
+            "content": answer
+        })
+
+        # 记录到 QA 历史（兼容）
+        self.socratic_session.qa_history.append({
+            'question': question,
+            'answer': answer
+        })
+
+        logger.info(f"[Q&A] 消息历史更新后长度: {len(self.socratic_session.message_history)}, qa_history长度: {len(self.socratic_session.qa_history)}")
+
+        return f"""{answer}
+
+还有其他问题吗？
+  1. 有，继续问
+  2. 没有了
+  3. 帮我总结
+"""
+
+    def _ask_if_more_questions(self) -> str:
+        """询问用户是否还有问题"""
+        term = self.socratic_session.term
+
+        return f"""很好！我来确认一下：
+
+关于"{term}"，你已经对这个概念有了基本理解。
+
+请选择：
+  1. 有，我想深入了解某个方面（请输入你的问题）
+  2. 没有了，继续学习其他
+  3. 帮我总结一下
+
+(输入 1/2/3 选择，或直接输入你的问题)
+"""
+
+    def _handle_qa_loop(self, user_input: str) -> str:
+        """用户主导的问答循环"""
+        user_input = user_input.strip()
+        term = self.socratic_session.term if self.socratic_session else "unknown"
+
+        logger.info(f"[Q_A_LOOP] 用户输入: {user_input[:50]}..., term={term}")
+
+        # 如果是退出命令
+        if user_input.lower() in ['退出', 'exit', 'quit', 'q']:
+            logger.info(f"[Q_A_LOOP] 用户退出, term={term}")
+            return self._handle_learning_exit()
+
+        # 检查选择
+        if user_input == "2":
+            # 用户选择结束当前知识点
+            logger.info(f"[Q_A_LOOP] 用户选择菜单2（结束学习）, term={term}")
+            return self._finalize_learning_and_prompt_next()
+
+        if user_input == "3":
+            # 用户要求总结
+            logger.info(f"[Q_A_LOOP] 用户选择菜单3（总结）, term={term}, 状态 -> SUMMARIZING")
+            self.state = DialogueState.SUMMARIZING
+            return self._generate_structured_summary()
+
+        if user_input == "1":
+            logger.info(f"[Q_A_LOOP] 用户选择菜单1（继续问）, term={term}")
+            return "请输入你想深入了解的问题："
+
+        # 用户输入了具体问题
+        if self._is_question(user_input):
+            logger.info(f"[Q_A_LOOP] 检测到问题，进入回答, term={term}")
+            return self._answer_user_question(user_input)
+
+        # 其他输入当作问题处理
+        logger.info(f"[Q_A_LOOP] 其他输入当问题处理, term={term}")
+        return self._answer_user_question(user_input)
+
+    def _provide_remediation(self, user_input: str, level: float, feedback: str) -> str:
+        """提供针对性补充讲解 - 维护消息历史"""
+        term = self.socratic_session.term
+        anchors = self.socratic_session.anchors or {}
+
+        logger.info(f"[REMEDIATION] 提供补充讲解, term={term}, level={level}")
+
+        # 添加用户输入到消息历史
+        self.socratic_session.message_history.append({
+            "role": "user",
+            "content": f"请详细解释一下我对{term}的理解中哪些地方有问题：{user_input}"
+        })
+
+        logger.info(f"[REMEDIATION] 调用 answer_question LLM, term={term}")
+        # 基于用户输入中的困惑点，提供补充讲解
+        remediation = self.socratic_guide.answer_question(
+            term=term,
+            anchors=anchors,
+            question=f"请详细解释一下我对{term}的理解中哪些地方有问题：{user_input}",
+            message_history=self.socratic_session.message_history
+        )
+        logger.info(f"[REMEDIATION] LLM回答完成, 长度={len(remediation)}, term={term}")
+
+        # 添加 AI 回答到消息历史
+        self.socratic_session.message_history.append({
+            "role": "assistant",
+            "content": remediation
+        })
+
+        return f"""{feedback}
+
+让我针对你的理解进行补充说明：
+
+{remediation}
+
+---
+
+请选择：
+  1. 有问题想问
+  2. 继续学习其他
+  3. 帮我总结一下
+
+(输入 1/2/3 选择，或直接输入你的问题)
+"""
+
+    def _generate_structured_summary(self) -> str:
+        """生成结构化总结"""
+        term = self.socratic_session.term
+        anchors = self.socratic_session.anchors or {}
+        qa_history = self.socratic_session.qa_history
+
+        logger.info(f"[SUMMARY] 开始生成总结, term={term}, qa_history长度={len(qa_history)}, 消息历史长度={len(self.socratic_session.message_history)}")
+
+        summary = self.socratic_guide.generate_structured_summary(
+            term=term,
+            anchors=anchors,
+            qa_history=qa_history,
+            message_history=self.socratic_session.message_history
+        )
+
+        logger.info(f"[SUMMARY] 总结生成完成, 长度={len(summary)}, term={term}")
+
+        return f"""{summary}
+
+---
+
+知识点学习完成！以上内容已保存到知识库。"""
+
+    def _finalize_learning_and_prompt_next(self) -> str:
+        """完成当前知识点学习，更新锚点，提示下一步"""
+        term = self.socratic_session.term
+
+        logger.info(f"[FINALIZE] 学习完成, term={term}")
+        logger.info(f"[FINALIZE] qa_history长度={len(self.socratic_session.qa_history)}, 消息历史长度={len(self.socratic_session.message_history)}")
+
+        # 更新知识库的锚点（基于用户问答历史补充）
+        self._enrich_anchors_from_qa_history()
+        logger.info(f"[FINALIZE] 锚点更新完成, term={term}")
+
+        # 重置状态
+        self.socratic_session = None
+        self.state = DialogueState.IDLE
+        logger.info(f"[FINALIZE] 状态重置为 IDLE")
+
+        return f"""✅ "{term}" 学习完成！
+
+已保存到您的知识库。
+
+输入 /list 查看已学内容，或直接输入其他概念继续学习。"""
+
+    def _enrich_anchors_from_qa_history(self):
+        """基于用户问答历史补充锚点"""
+        if not self.socratic_session or not self.socratic_session.qa_history:
+            return
+
+        # 这里可以添加基于 QA 历史更新锚点的逻辑
+        # 例如：如果用户问了很多关于对比的问题，可以更新 contrast_anchor
+        # 目前是简化实现，暂不修改锚点
+        pass
+
+    def _handle_summarizing(self, user_input: str) -> str:
+        """处理总结阶段的用户回应"""
+        user_input = user_input.strip()
+
+        # 如果是确认总结
+        if user_input.lower() in ['确认', 'yes', 'y', '是']:
+            return self._finalize_learning_and_prompt_next()
+
+        # 如果是重新总结
+        if user_input.lower() in ['重新总结', 'regenerate']:
+            return self._generate_structured_summary()
+
+        # 如果是退出
+        if user_input.lower() in ['退出', 'exit', 'quit', 'q']:
+            return self._handle_learning_exit()
+
+        # 其他输入当作其他命令处理
+        return self._finalize_learning_and_prompt_next()
+
+    def _handle_learning_exit(self) -> str:
+        """处理学习退出"""
+        # 如果在主题学习流程中
+        if self._pending_kpoints:
+            self.state = DialogueState.SELECTING_KPOINT
+            return self._show_kpoint_selector()
+        elif self._pending_dimensions:
+            self.state = DialogueState.DECOMPOSING
+            return self._show_dimension_selector_text()
+        else:
+            # 完全结束
+            self.socratic_session = None
+            self.state = DialogueState.IDLE
+            return "已退出学习。"
+
+    def _show_kpoint_selector(self) -> str:
+        """显示知识点选择器"""
+        kpoints = self._pending_kpoints
+        theme = self._pending_theme
+        dimension = self._pending_dimension
+
+        kp_list = "\n".join(f"  {i+1}. {k}" for i, k in enumerate(kpoints))
+
+        return f"""📚 主题: {theme} > {dimension}
+
+该维度下有以下知识点，请选择：
+
+{kp_list}
+
+  0. 其他（输入其他需求或命令）
+
+(输入序号选择)"""
+
+    def _show_dimension_selector_text(self) -> str:
+        """显示维度选择器（文本模式）"""
+        theme = self._pending_theme
+        dimensions = self._pending_dimensions
+
+        dim_list = "\n".join(f"  {i+1}. {d}" for i, d in enumerate(dimensions))
+
+        return f"""📚 主题: {theme}
+
+请选择要学习的维度：
+
+{dim_list}
+
+  0. 其他（输入其他需求或命令）
+
+(输入序号选择)"""
