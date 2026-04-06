@@ -9,6 +9,13 @@ import json
 from typing import Optional, Dict, Any, List
 from abc import ABC, abstractmethod
 
+# LLM请求日志
+try:
+    from utils import get_llm_logger
+except ImportError:
+    # 降级：如果无法导入，使用普通logger
+    get_llm_logger = None
+
 
 class BaseLLMClient(ABC):
     """LLM客户端基类"""
@@ -17,6 +24,28 @@ class BaseLLMClient(ABC):
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
         """发送聊天请求"""
         pass
+
+    def _log_request(self, messages: List[Dict[str, str]], provider: str = "unknown"):
+        """记录LLM请求"""
+        if get_llm_logger:
+            try:
+                logger = get_llm_logger()
+                # 格式化消息
+                msg_str = json.dumps(messages, ensure_ascii=False, indent=2)
+                logger.debug(f"[{provider}] Request:\n{msg_str}")
+            except Exception:
+                pass
+
+    def _log_response(self, response: str, provider: str = "unknown"):
+        """记录LLM响应"""
+        if get_llm_logger:
+            try:
+                logger = get_llm_logger()
+                # 截断过长响应
+                resp_preview = response[:2000] + "..." if len(response) > 2000 else response
+                logger.debug(f"[{provider}] Response:\n{resp_preview}")
+            except Exception:
+                pass
 
 
 class OpenAIClient(BaseLLMClient):
@@ -28,6 +57,8 @@ class OpenAIClient(BaseLLMClient):
 
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
         import requests
+
+        self._log_request(messages, "openai")
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -48,7 +79,9 @@ class OpenAIClient(BaseLLMClient):
             timeout=30
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        result = response.json()["choices"][0]["message"]["content"]
+        self._log_response(result, "openai")
+        return result
 
 
 class AnthropicClient(BaseLLMClient):
@@ -60,6 +93,8 @@ class AnthropicClient(BaseLLMClient):
 
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
         import requests
+
+        self._log_request(messages, "anthropic")
 
         # 将消息转换为Anthropic格式
         system = ""
@@ -90,7 +125,9 @@ class AnthropicClient(BaseLLMClient):
             timeout=30
         )
         response.raise_for_status()
-        return response.json()["content"][0]["text"]
+        result = response.json()["content"][0]["text"]
+        self._log_response(result, "anthropic")
+        return result
 
 
 class OllamaClient(BaseLLMClient):
@@ -102,6 +139,8 @@ class OllamaClient(BaseLLMClient):
 
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
         import requests
+
+        self._log_request(messages, "ollama")
 
         # 转换消息格式
         ollama_messages = []
@@ -127,7 +166,9 @@ class OllamaClient(BaseLLMClient):
             timeout=60
         )
         response.raise_for_status()
-        return response.json()["message"]["content"]
+        result = response.json()["message"]["content"]
+        self._log_response(result, "ollama")
+        return result
 
 
 class MiniMaxClient(BaseLLMClient):
@@ -150,6 +191,8 @@ class MiniMaxClient(BaseLLMClient):
         return self._client
 
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
+        self._log_request(messages, "minimax")
+
         # 将消息转换为 Anthropic 格式
         system = ""
         anthropic_messages = []
@@ -179,25 +222,34 @@ class MiniMaxClient(BaseLLMClient):
         # 解析响应
         for block in message.content:
             if block.type == "text":
-                return block.text
+                result = block.text
+                self._log_response(result, "minimax")
+                return result
 
         # 如果没有 text 类型，返回第一个可用的内容
-        return str(message.content[0])
+        result = str(message.content[0])
+        self._log_response(result, "minimax")
+        return result
 
 
 class MockLLMClient(BaseLLMClient):
     """模拟LLM客户端（用于测试）"""
 
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
+        self._log_request(messages, "mock")
+
         # 返回模拟回复
         last_message = messages[-1]["content"] if messages else ""
 
         if "理解" in last_message or "了解" in last_message:
-            return "很好！你已经对这个问题有了初步的理解。让我们继续深入探讨..."
+            result = "很好！你已经对这个问题有了初步的理解。让我们继续深入探讨..."
         elif "总结" in last_message:
-            return "非常好！看来你已经掌握了这个概念的核心要点。"
+            result = "非常好！看来你已经掌握了这个概念的核心要点。"
         else:
-            return "这是一个很有趣的观点。能告诉我更多关于你是怎么想的吗？"
+            result = "这是一个很有趣的观点。能告诉我更多关于你是怎么想的吗？"
+
+        self._log_response(result, "mock")
+        return result
 
 
 def create_llm_client(provider: str = None, **kwargs) -> BaseLLMClient:

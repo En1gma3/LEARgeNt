@@ -21,6 +21,13 @@ logger = get_logger(__name__)
 class InteractiveMode:
     """交互模式"""
 
+    # 讲解后的菜单选项
+    POST_EXPLANATION_MENU = [
+        "有问题想问",
+        "继续学习其他",
+        "帮我总结一下"
+    ]
+
     def __init__(self):
         logger.info("Initializing InteractiveMode")
         self.predictor = InterestPredictor()
@@ -29,6 +36,7 @@ class InteractiveMode:
         self.learned_terms: List[str] = []
         self._awaiting_continue_choice = False  # 等待用户选择继续/结束
         self._pending_summary = ""  # 保存学完后的总结
+        self._awaiting_post_explanation = False  # 等待讲解后的菜单选择
         logger.info("InteractiveMode initialized")
 
     def run(self) -> int:
@@ -52,6 +60,7 @@ class InteractiveMode:
                     dimensions = self.dialogue.get_pending_dimensions()
                     response = self._show_dimension_selector(theme, dimensions)
                     self._awaiting_continue_choice = False
+                    self._awaiting_post_explanation = False
 
                 # 检查是否需要知识点选择
                 elif self.dialogue.needs_kpoint_selection():
@@ -60,10 +69,15 @@ class InteractiveMode:
                     kpoints = self.dialogue.get_pending_kpoints()
                     response = self._show_kpoint_selector(theme, dimension, kpoints)
                     self._awaiting_continue_choice = False
+                    self._awaiting_post_explanation = False
 
                 # 检查是否在等待继续/结束选择
                 elif self._awaiting_continue_choice:
                     response = self._handle_continue_choice(user_input)
+
+                # 检查是否在等待讲解后的菜单选择
+                elif self._awaiting_post_explanation:
+                    response = self._handle_post_explanation()
 
                 else:
                     user_input = input("> ").strip()
@@ -87,6 +101,10 @@ class InteractiveMode:
                             if len(parts) > 1:
                                 self._pending_summary = parts[0].strip()
 
+                    # 检查是否需要显示讲解后的菜单选择
+                    if self._needs_post_explanation_menu(response):
+                        self._awaiting_post_explanation = True
+
             except (EOFError, KeyboardInterrupt):
                 logger.info("Received EOF/KeyboardInterrupt")
                 self._cleanup()
@@ -102,6 +120,46 @@ class InteractiveMode:
                 return 0
 
         return 0
+
+    def _needs_post_explanation_menu(self, response: str) -> bool:
+        """检查响应是否需要显示讲解后的菜单选择"""
+        # 检查是否包含讲解后菜单的关键内容
+        menu_keywords = ["有问题想问", "继续学习其他", "帮我总结一下"]
+        return all(keyword in response for keyword in menu_keywords)
+
+    def _handle_post_explanation(self) -> str:
+        """处理讲解后的菜单选择 - 使用光标选择"""
+        print()
+        print("-" * 40)
+        print("请选择：（方向键导航，回车确认）")
+        print()
+
+        selector = ArrowSelector(
+            items=self.POST_EXPLANATION_MENU,
+            title=None,
+            multi_column=False
+        )
+
+        idx = selector.run()
+
+        if idx is None:
+            # 用户取消，返回主提示
+            return "请输入其他命令："
+
+        # 根据选择处理
+        choice_map = {
+            0: "1",  # 有问题想问
+            1: "2",  # 继续学习其他
+            2: "3"   # 帮我总结一下
+        }
+
+        user_choice = choice_map.get(idx, "1")
+        logger.info(f"Post-explanation menu selected: {idx} -> {user_choice}")
+
+        self._awaiting_post_explanation = False
+
+        # 将选择发送给 dialogue 处理
+        return self.dialogue.handle_input(user_choice)
 
     def _show_dimension_selector(self, theme: str, dimensions: List[str]) -> str:
         """
