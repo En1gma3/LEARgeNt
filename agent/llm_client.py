@@ -9,6 +9,25 @@ import json
 from typing import Optional, Dict, Any, List
 from abc import ABC, abstractmethod
 
+# Anthropic 消息格式工具
+try:
+    from agent.anthropic_messages import (
+        text_content_block,
+        convert_messages_to_anthropic_format,
+        extract_tool_calls_from_response,
+        is_anthropic_format,
+    )
+except ImportError:
+    # 降级：如果无法导入，定义空函数
+    def text_content_block(text):
+        return {"type": "text", "text": text}
+    def convert_messages_to_anthropic_format(messages):
+        return messages
+    def extract_tool_calls_from_response(content):
+        return []
+    def is_anthropic_format(msg):
+        return False
+
 # LLM请求日志
 try:
     from utils import get_llm_logger
@@ -29,10 +48,9 @@ class BaseLLMClient(ABC):
         """记录LLM请求"""
         if get_llm_logger:
             try:
-                logger = get_llm_logger()
-                # 格式化消息
+                llm_logger = get_llm_logger()
                 msg_str = json.dumps(messages, ensure_ascii=False, indent=2)
-                logger.debug(f"[{provider}] Request:\n{msg_str}")
+                llm_logger.debug(f"[{provider}] Request:\n{msg_str}")
             except Exception:
                 pass
 
@@ -40,12 +58,36 @@ class BaseLLMClient(ABC):
         """记录LLM响应"""
         if get_llm_logger:
             try:
-                logger = get_llm_logger()
+                llm_logger = get_llm_logger()
                 # 截断过长响应
                 resp_preview = response[:2000] + "..." if len(response) > 2000 else response
-                logger.debug(f"[{provider}] Response:\n{resp_preview}")
+                llm_logger.debug(f"[{provider}] Response:\n{resp_preview}")
             except Exception:
                 pass
+
+    def _prepare_messages(self, messages: List[Dict[str, Any]]) -> tuple:
+        """提取 system 消息，返回 (system, filtered_messages)"""
+        system = ""
+        filtered = []
+        for msg in messages:
+            role = msg.get("role")
+            if role == "system":
+                # System 消息：content 可能是字符串或内容块列表
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    system = content
+                elif isinstance(content, list):
+                    # 合并所有文本块
+                    text_parts = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif isinstance(block, str):
+                            text_parts.append(block)
+                    system = "\n".join(text_parts)
+            else:
+                filtered.append(msg)
+        return system, filtered
 
 
 class OpenAIClient(BaseLLMClient):
@@ -95,15 +137,7 @@ class AnthropicClient(BaseLLMClient):
         import requests
 
         self._log_request(messages, "anthropic")
-
-        # 将消息转换为Anthropic格式
-        system = ""
-        anthropic_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system = msg["content"]
-            else:
-                anthropic_messages.append(msg)
+        system, anthropic_messages = self._prepare_messages(messages)
 
         headers = {
             "x-api-key": self.api_key,
@@ -141,22 +175,13 @@ class OllamaClient(BaseLLMClient):
         import requests
 
         self._log_request(messages, "ollama")
-
-        # 转换消息格式
-        ollama_messages = []
-        system = ""
-        for msg in messages:
-            if msg["role"] == "system":
-                system = msg["content"]
-            else:
-                ollama_messages.append(msg)
+        system, ollama_messages = self._prepare_messages(messages)
 
         data = {
             "model": kwargs.get("model", self.model),
             "messages": ollama_messages,
             "stream": False
         }
-
         if system:
             data["system"] = system
 
@@ -190,29 +215,26 @@ class MiniMaxClient(BaseLLMClient):
             )
         return self._client
 
-    def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
+    def chat(self, messages: List[Dict[str, Any]], **kwargs) -> str:
+        """发送聊天请求，返回文本响应"""
         self._log_request(messages, "minimax")
+        system, filtered = self._prepare_messages(messages)
 
-        # 将消息转换为 Anthropic 格式
-        system = ""
+        # 转换消息为 Anthropic 格式
         anthropic_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system = msg["content"]
+        for msg in filtered:
+            if is_anthropic_format(msg):
+                anthropic_messages.append(msg)
             else:
                 anthropic_messages.append({
                     "role": msg["role"],
-                    "content": [{
-                        "type": "text",
-                        "text": msg["content"]
-                    }]
+                    "content": [{"type": "text", "text": msg.get("content", "")}]
                 })
 
         client = self._get_client()
         model = kwargs.get("model", self.model)
         max_tokens = kwargs.get("max_tokens", 1000)
 
-        # 使用流式 API 以支持长时间操作
         with client.messages.stream(
             model=model,
             max_tokens=max_tokens,
@@ -221,51 +243,51 @@ class MiniMaxClient(BaseLLMClient):
         ) as stream:
             message = stream.get_final_message()
 
-        # 解析响应
         for block in message.content:
-            if block.type == "text":
+            if hasattr(block, 'type') and block.type == "text":
                 result = block.text
                 self._log_response(result, "minimax")
                 return result
+            elif isinstance(block, dict) and block.get("type") == "text":
+                result = block.get("text", "")
+                self._log_response(result, "minimax")
+                return result
 
-        # 如果没有 text 类型，返回第一个可用的内容
-        result = str(message.content[0])
+        result = str(message.content[0]) if message.content else ""
         self._log_response(result, "minimax")
         return result
 
-    def chat_with_tools(self, messages: List[Dict[str, str]], tools: List[Dict], **kwargs) -> Dict[str, Any]:
-        """MiniMax (Anthropic SDK) 支持 tool_use"""
-        self._log_request(messages, "minimax")
+    def chat_with_tools(self, messages: List[Dict[str, Any]], tools: List[Dict], **kwargs) -> Dict[str, Any]:
+        """MiniMax (Anthropic SDK) 支持 tool_use
 
-        system = ""
+        返回格式:
+        - 工具调用: {"type": "tool_use", "tool_calls": [{"id": "...", "name": "...", "input": {...}}], "message": ...}
+        - 文本响应: {"type": "text", "content": "..."}
+        """
+        system, filtered = self._prepare_messages(messages)
+
+        # 转换消息为 Anthropic 格式（如果是旧格式）
         anthropic_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system = msg["content"]
+        for msg in filtered:
+            if is_anthropic_format(msg):
+                # 已经是 Anthropic 格式
+                anthropic_messages.append(msg)
             else:
+                # 旧格式字符串 content，转换为 Anthropic 格式
                 anthropic_messages.append({
                     "role": msg["role"],
-                    "content": [{
-                        "type": "text",
-                        "text": msg["content"]
-                    }]
+                    "content": [{"type": "text", "text": msg.get("content", "")}]
                 })
+
+        # Tools 已经是 Anthropic 格式: [{"name": ..., "description": ..., "input_schema": ...}]
+        anthropic_tools = tools if tools else []
 
         client = self._get_client()
         model = kwargs.get("model", self.model)
         max_tokens = kwargs.get("max_tokens", 4096)
 
-        # 转换 tools 格式
-        anthropic_tools = []
-        for tool in tools:
-            func = tool.get("function", {})
-            anthropic_tools.append({
-                "name": func.get("name"),
-                "description": func.get("description"),
-                "input_schema": func.get("parameters", {"type": "object"})
-            })
+        self._log_request(anthropic_messages, "minimax")
 
-        # 使用流式 API 处理长时间请求
         with client.messages.stream(
             model=model,
             max_tokens=max_tokens,
@@ -275,18 +297,27 @@ class MiniMaxClient(BaseLLMClient):
         ) as stream:
             message = stream.get_final_message()
 
-        # 记录原始响应 blocks
         self._log_response(message.content, "minimax")
 
-        # 检查最后一个 block
-        last_block = message.content[-1]
-        if last_block.type == "tool_use":
+        # 从响应中提取 tool_use 块
+        tool_calls = extract_tool_calls_from_response(message.content)
+
+        if tool_calls:
+            # 返回结构化的 tool 调用信息
             return {
-                "type": "function",
-                "name": last_block.name,
-                "arguments": last_block.input
+                "type": "tool_use",
+                "tool_calls": tool_calls,
+                "message": message  # 保留完整消息供调用方使用
             }
-        return {"type": "text", "content": str(last_block.text) if hasattr(last_block, "text") else str(last_block)}
+
+        # 没有工具调用，返回文本响应
+        for block in message.content:
+            if hasattr(block, 'type') and block.type == "text":
+                return {"type": "text", "content": block.text}
+            elif isinstance(block, dict) and block.get("type") == "text":
+                return {"type": "text", "content": block.get("text", "")}
+
+        return {"type": "text", "content": str(message.content[0]) if message.content else ""}
 
 
 class MockLLMClient(BaseLLMClient):

@@ -10,8 +10,10 @@ from typing import Optional, Dict, List
 class AgentState(Enum):
     """Agent 状态枚举"""
     IDLE = "idle"                      # 等待用户输入
-    WAITING_SELECTION = "waiting_selection"   # 等待用户输入问题
-    LEARNING = "learning"              # 学习中
+    BUILDING = "building"               # 正在构建知识
+    TEACHING = "teaching"              # 正在讲解
+    Q_A = "q_a"                        # 问答中
+    SUMMARIZING = "summarizing"        # 总结中
 
 
 @dataclass

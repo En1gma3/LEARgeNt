@@ -11,6 +11,7 @@ from memory import ShortTermMemory, LongTermMemory, KnowledgePoint
 from knowledge import KnowledgeDB
 from knowledge.models import Term
 from utils import get_logger
+from agent.anthropic_messages import user_message, assistant_message
 
 logger = get_logger(__name__)
 
@@ -1169,10 +1170,7 @@ LearnMate 帮助
         logger.debug(f"[Q&A] 当前消息历史长度: {len(self.socratic_session.message_history)}")
 
         # 添加用户问题到消息历史
-        self.socratic_session.message_history.append({
-            "role": "user",
-            "content": question
-        })
+        self.socratic_session.message_history.append(user_message(question))
 
         logger.info(f"[Q&A] 调用 answer_question LLM, term={term}")
         answer = self.socratic_guide.answer_question(
@@ -1184,10 +1182,7 @@ LearnMate 帮助
         logger.info(f"[Q&A] LLM回答完成, 长度={len(answer)}, term={term}")
 
         # 添加 AI 回答到消息历史
-        self.socratic_session.message_history.append({
-            "role": "assistant",
-            "content": answer
-        })
+        self.socratic_session.message_history.append(assistant_message(answer))
 
         # 记录到 QA 历史（兼容）
         self.socratic_session.qa_history.append({
@@ -1266,10 +1261,9 @@ LearnMate 帮助
         logger.info(f"[REMEDIATION] 提供补充讲解, term={term}, level={level}")
 
         # 添加用户输入到消息历史
-        self.socratic_session.message_history.append({
-            "role": "user",
-            "content": f"请详细解释一下我对{term}的理解中哪些地方有问题：{user_input}"
-        })
+        self.socratic_session.message_history.append(user_message(
+            f"请详细解释一下我对{term}的理解中哪些地方有问题：{user_input}"
+        ))
 
         logger.info(f"[REMEDIATION] 调用 answer_question LLM, term={term}")
         # 基于用户输入中的困惑点，提供补充讲解
@@ -1282,10 +1276,7 @@ LearnMate 帮助
         logger.info(f"[REMEDIATION] LLM回答完成, 长度={len(remediation)}, term={term}")
 
         # 添加 AI 回答到消息历史
-        self.socratic_session.message_history.append({
-            "role": "assistant",
-            "content": remediation
-        })
+        self.socratic_session.message_history.append(assistant_message(remediation))
 
         return f"""{feedback}
 

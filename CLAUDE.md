@@ -8,6 +8,11 @@ LearnMate is an intelligent learning assistant that uses LLM-powered Socratic di
 
 ## Commands
 
+### Environment Setup
+```bash
+conda activate leargent    # 必须先激活 conda 环境
+```
+
 ### Run Application
 ```bash
 python -m cli                    # Start interactive mode
