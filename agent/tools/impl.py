@@ -1,11 +1,10 @@
 """
 工具实现
 
-7个工具: build, answer, teach, decompose, summarize, select, fetch
+9个工具: build, answer, teach, decompose, summarize, select, fetch, finish, export_obsidian
 """
 
 import json
-import re
 from typing import Any, Dict, List, Optional
 
 from agent.tools.registry import BaseTool, ToolResult
@@ -586,7 +585,6 @@ class FetchTool(BaseTool):
         # 尝试使用现有的 extractor 模块
         try:
             from extractor.factory import ExtractorFactory
-            from parser.factory import ParserFactory
 
             # 尝试提取
             extractor = ExtractorFactory.create_extractor("llm")
@@ -594,9 +592,9 @@ class FetchTool(BaseTool):
 
             if result:
                 return {
-                    "definition": result.get("definition", ""),
-                    "source": result.get("source", "extractor"),
-                    "url": result.get("url", "")
+                    "definition": result[0].name if result else "",
+                    "source": "extractor",
+                    "url": ""
                 }
         except Exception as e:
             logger.debug(f"Extractor failed: {e}")
@@ -648,6 +646,8 @@ class ExportObsidianTool(BaseTool):
             ),
             needs_agent=True
         )
+        from agent.tools.export import ObsidianExporter
+        self._exporter = ObsidianExporter()
 
     async def execute(self, params: Dict, context: Dict) -> ToolResult:
         """导出学习会话到 Obsidian"""
@@ -664,228 +664,13 @@ class ExportObsidianTool(BaseTool):
                     error="没有对话历史可导出"
                 )
 
-            # 生成Obsidian文档
-            docs = await self._generate_obsidian_docs(message_history, current_term, anchors)
+            # 使用导出器
+            result = await self._exporter.export(message_history, current_term, anchors)
 
-            # 解析并保存文档
-            files = self._parse_and_save_obsidian(docs, current_term)
-
-            return ToolResult(
-                success=True,
-                data={
-                    "success": True,
-                    "files": files,
-                    "message": f"已导出 {len(files)} 个文件到 vault/ 目录"
-                }
-            )
+            return ToolResult(success=True, data=result)
         except Exception as e:
             logger.error(f"ExportObsidianTool failed: {e}")
             return ToolResult(success=False, data=None, error=str(e))
-
-    def _format_conversation(self, message_history: List[Dict]) -> str:
-        """格式化对话历史"""
-        from agent.anthropic_messages import extract_text_from_message
-
-        lines = []
-        for msg in message_history:
-            role = msg.get("role", "unknown")
-            text = extract_text_from_message(msg)
-            if role == "user":
-                lines.append(f"用户: {text}")
-            elif role == "assistant":
-                lines.append(f"AI: {text}")
-        return "\n\n".join(lines)
-
-    async def _generate_obsidian_docs(self, message_history: List[Dict], current_term: str, anchors: Dict) -> str:
-        """生成Obsidian格式的Markdown文档"""
-        conversation_text = self._format_conversation(message_history)
-
-        topic_anchor = anchors.get("topic_anchor", "通用")
-        dependency_anchors = anchors.get("dependency_anchors", [])
-        semantic_anchor = anchors.get("semantic_anchor", "")
-        contrast_anchor = anchors.get("contrast_anchor", "")
-        example_anchor = anchors.get("example_anchor", "")
-
-        dependencies_str = ", ".join(dependency_anchors) if dependency_anchors else "无"
-
-        prompt = f"""你是一位知识工程师（Knowledge Engineer），擅长将对话整理为可复用的知识卡片（Zettelkasten 风格），并适配 Obsidian 知识库。
-
-## 对话主题
-{current_term}
-
-## 输入结构说明
-- 主题领域: {topic_anchor}（如：机器学习 / 心理学）
-- 前置概念: {dependencies_str}（逗号分隔，如：A, B, C）
-- 核心定义: {semantic_anchor}（一句话）
-- 对比区分: {contrast_anchor}（A vs B）
-- 典型例子: {example_anchor}（简要描述）
-
-## 对话历史
-{conversation_text}
-
----
-
-## 🎯 任务目标
-
-将对话转化为**结构化、可链接、可检索的知识卡片**：
-
-- 提炼核心知识（而不是复述对话）
-- 构建概念之间的链接关系
-- 输出适合 Obsidian + Dataview 的 Markdown
-
----
-
-## 📦 输出要求（必须严格遵守）
-
-### 1️⃣ YAML frontmatter（用于 Dataview）
-
-必须使用标准 YAML：
-
----
-title: {current_term}
-aliases: []
-tags: [{topic_anchor}]
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
-type: note
-status: evergreen
----
-
-### 2️⃣ 正文结构
-
-# 🧾 概要
-用 3–5 条总结核心内容（高密度信息）
-
-# 💡 核心定义
-- 用一句话给出标准定义
-- 如有必要，补充解释
-
-# 🧠 关键机制 / 原理
-- 用结构化方式解释"为什么成立"
-- 尽量拆成 2–4 个要点
-
-# ⚖️ 对比与区分
-- 使用表格或列表
-- 明确与相似概念的区别
-
-# 📊 典型例子
-- 给出 1–3 个具体例子
-- 优先使用现实场景
-
-# 🔗 相关概念（双链）
-- 使用 [[概念]] 格式
-- 包含：
-  - 前置概念（来自 dependencies）
-  - 派生概念
-  - 易混淆概念
-
-# 📌 行动项 / 启发
-- 可执行建议 或 思考问题
-
----
-
-## 🔗 链接策略（关键）
-
-- 每个重要概念必须转为 [[双链]]
-- 避免大而泛的词（如：系统、方法）
-- 优先原子化概念（一个概念=一张卡片）
-
----
-
-## 🧠 写作风格
-
-- 高信息密度（避免废话）
-- 结构清晰（多用列表/层级）
-- 可长期复用（避免上下文依赖）
-
----
-
-## 🚫 禁止事项
-
-- 不要复述对话过程
-- 不要输出解释性说明
-- 不要使用"根据以上对话…"等元语言
-
----
-
-请直接输出 Markdown 内容。"""
-
-        messages = [{"role": "user", "content": prompt}]
-        llm = get_llm_client()
-        response = llm.chat(messages, max_tokens=196607)
-
-        return response
-
-    def _parse_and_save_obsidian(self, markdown_content: str, current_term: str) -> List[Dict]:
-        """解析LLM响应并保存为Obsidian文件"""
-        import os
-        from datetime import datetime
-
-        # 清理markdown代码块包装（处理 ```markdown ... ``` 或 ``` ... ```）
-        lines = markdown_content.strip().split('\n')
-        if lines and lines[0].strip().startswith('```'):
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith('```'):
-            lines = lines[:-1]
-        markdown_content = '\n'.join(lines).strip()
-
-        # 确保vault目录存在
-        vault_dir = "vault"
-        if not os.path.exists(vault_dir):
-            os.makedirs(vault_dir)
-
-        files = []
-
-        # 首先检查整体内容是否包含frontmatter
-        frontmatter_match = re.match(r'^---\n(.*?)\n---', markdown_content, re.DOTALL)
-        if frontmatter_match:
-            # 有frontmatter，作为单个文档处理
-            frontmatter_text = frontmatter_match.group(1)
-            # 保留完整内容（包括frontmatter），因为 Obsidian 需要 frontmatter
-            full_content = markdown_content.strip()
-
-            title = current_term
-            tags = ["学习", "概念"]
-
-            for line in frontmatter_text.split("\n"):
-                if line.startswith("title:"):
-                    title = line.replace("title:", "").strip().strip('"\'')
-                elif line.startswith("tags:"):
-                    tag_match = re.findall(r"\[([^\]]+)\]", line)
-                    if tag_match:
-                        tags = [t.strip() for t in tag_match[0].split(",")]
-
-            safe_title = re.sub(r'[<>:"/\\|?*]', "_", title)
-            filepath = os.path.join(vault_dir, f"{safe_title}.md")
-
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(full_content)
-
-            files.append({
-                "path": filepath,
-                "title": title,
-                "wiki_link": f"[[{title}]]",
-                "tags": tags
-            })
-            logger.info(f"[_parse_and_save_obsidian] Saved: {filepath}")
-        else:
-            # 没有frontmatter，作为单个文档处理
-            title = current_term
-            safe_title = re.sub(r'[<>:"/\\|?*]', "_", title)
-            filepath = os.path.join(vault_dir, f"{safe_title}.md")
-
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(markdown_content)
-
-            files.append({
-                "path": filepath,
-                "title": title,
-                "wiki_link": f"[[{title}]]",
-                "tags": ["学习", "概念"]
-            })
-            logger.info(f"[_parse_and_save_obsidian] Saved: {filepath}")
-
-        return files
 
     def get_anthropic_schema(self) -> Dict:
         return {

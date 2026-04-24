@@ -113,10 +113,21 @@ def get_registry() -> ToolRegistry:
 
 def _register_tools(registry: ToolRegistry) -> None:
     """注册所有工具"""
-    from agent.tools.impl import ExportObsidianTool
+    from agent.tools.impl import (
+        BuildTool, AnswerTool, TeachTool, DecomposeTool,
+        SummarizeTool, SelectTool, FetchTool, FinishTool,
+        ExportObsidianTool
+    )
 
-    # 只注册导出工具
-    registry.register(ExportObsidianTool())
+    # 注册所有工具
+    tool_classes = [
+        BuildTool, AnswerTool, TeachTool, DecomposeTool,
+        SummarizeTool, SelectTool, FetchTool, FinishTool,
+        ExportObsidianTool
+    ]
+
+    for tool_class in tool_classes:
+        registry.register(tool_class())
 
 
 def reset_registry() -> None:
