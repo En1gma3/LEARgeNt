@@ -79,3 +79,9 @@ Every concept has anchors built by LLM:
 - LLM client logs requests to `data/logs/llm.log`
 - Multi-turn conversation uses `message_history` field in `SocraticSession`
 - Arrow selector (`cli/selector.py`) supports cursor navigation for menus
+
+## Test Export Rules
+
+When testing export functionality:
+1. **User permission required**: Test export results in `vault_test/` directory must NOT be deleted without explicit user permission
+2. **Use `vault_test` directory**: Always use `vault_test/` for test exports, never other directories

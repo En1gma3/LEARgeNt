@@ -5,30 +5,18 @@
 """
 
 from typing import Optional, Dict, Any, List
-from enum import Enum
 
 from memory import ShortTermMemory, LongTermMemory, KnowledgePoint
 from knowledge import KnowledgeDB
 from knowledge.models import Term
 from utils import get_logger
 from agent.anthropic_messages import user_message, assistant_message
+from agent.state import AgentState
+
+# 向后兼容别名
+DialogueState = AgentState
 
 logger = get_logger(__name__)
-
-
-class DialogueState(Enum):
-    """对话状态"""
-    IDLE = "idle"                 # 空闲
-    LEARNING = "learning"          # 学习中
-    ASKING = "asking"             # 问答中
-    REVIEWING = "reviewing"       # 复习中
-    GUIDING = "guiding"           # 引导中（苏格拉底模式）
-    CONFIRMING = "confirming"      # 确认中
-    DECOMPOSING = "decomposing"    # 主题拆解中（维度选择）
-    SELECTING_KPOINT = "selecting_kpoint"  # 知识点选择
-    EXPLAINING = "explaining"      # 概念讲解中
-    Q_A_LOOP = "q_a_loop"        # 用户主导问答循环
-    SUMMARIZING = "summarizing"   # 总结中
 
 
 class DialogueManager:

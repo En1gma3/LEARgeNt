@@ -6,6 +6,13 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Optional, List
 
+# 统一状态枚举从 state.py 导入
+# DialogueState 已移至 agent/state.py
+from agent.state import AgentState
+
+# 保持向后兼容
+DialogueState = AgentState
+
 
 class QuestionType(Enum):
     """六类核心问题类型"""
@@ -59,19 +66,6 @@ class HintLevel(Enum):
             HintLevel.LEVEL_3_PARTIAL: "你可以这样理解：{concept}的本质是...",
         }
         return prompts[self]
-
-
-class DialogueState(Enum):
-    """对话状态"""
-
-    DIAGNOSIS = "diagnosis"         # 诊断理解
-    DECOMPOSE = "decompose"         # 拆解问题
-    GUIDING = "guiding"             # 引导推理
-    RECOGNIZING_ERROR = "recognizing_error"  # 识别错误
-    HINT = "hint"                   # 关键提示
-    STUDENT_SUMMARY = "student_summary"  # 学生总结
-    AI_SUMMARY = "ai_summary"       # AI结构化总结
-    COMPLETED = "completed"          # 完成
 
 
 @dataclass
