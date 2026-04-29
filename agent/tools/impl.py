@@ -647,7 +647,7 @@ class ExportObsidianTool(BaseTool):
             needs_agent=True
         )
         from agent.tools.export import ObsidianExporter
-        self._exporter = ObsidianExporter("vault")
+        self._exporter = ObsidianExporter()
 
     async def execute(self, params: Dict, context: Dict) -> ToolResult:
         """导出学习会话到 Obsidian"""
