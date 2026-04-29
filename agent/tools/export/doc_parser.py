@@ -25,6 +25,11 @@ class DocParser:
         Returns:
             List[Dict]: 保存的文件信息列表
         """
+        # 防御性检查：处理 None 或空输入
+        if not markdown_content:
+            logger.warning("No markdown content to parse")
+            return []
+
         # 清理 markdown 代码块包装
         markdown_content = self._clean_markdown(markdown_content)
 
@@ -55,13 +60,35 @@ class DocParser:
         return files
 
     def _clean_markdown(self, markdown_content: str) -> str:
-        """清理 markdown 代码块包装"""
-        lines = markdown_content.strip().split('\n')
-        if lines and lines[0].strip().startswith('```'):
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith('```'):
-            lines = lines[:-1]
-        return '\n'.join(lines).strip()
+        """清理 markdown 代码块包装，处理多层结构"""
+        if not markdown_content:
+            return ""
+
+        content = markdown_content.strip()
+
+        # 如果内容包含 markdown 代码块，提取代码块内容
+        if '```markdown' in content:
+            lines = content.split('\n')
+            cleaned_lines = []
+            in_code_block = False
+
+            for line in lines:
+                if '```markdown' in line:
+                    in_code_block = True
+                    continue  # 跳过 ```markdown:xxx 行
+                elif line.strip() == '```':
+                    in_code_block = False
+                    continue  # 跳过结束的 ```
+                elif line.strip() == '----':
+                    # 文档分隔符，转换为标准分隔符
+                    cleaned_lines.append('===DOC_SEPARATOR===')
+                    continue
+                elif in_code_block:
+                    cleaned_lines.append(line)
+
+            content = '\n'.join(cleaned_lines)
+
+        return content.strip()
 
     def _parse_single_doc(self, block: str, current_term: str) -> Dict:
         """解析单个文档块"""
@@ -107,7 +134,7 @@ class DocParser:
             frontmatter_text = frontmatter_match.group(1)
             full_content = markdown_content.strip()
 
-            title = current_term
+            title = current_term or "未命名文档"  # 确保 title 不为 None
             tags = ["学习", "概念"]
             para_category = "Areas"
             subfolder = "通用"
@@ -135,7 +162,7 @@ class DocParser:
             return self._save_doc(full_content, title, tags, para_category, subfolder)
         else:
             # 没有 frontmatter，作为单个文档处理
-            title = current_term
+            title = current_term or "未命名文档"  # 确保 title 不为 None
             safe_title = re.sub(r'[<>:"/\\|?*]', "_", title)
             vault_dir = self.vault_manager.get_vault_dir()
             filepath = os.path.join(vault_dir, f"{safe_title}.md")
