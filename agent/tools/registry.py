@@ -121,8 +121,8 @@ def _register_tools(registry: ToolRegistry) -> None:
 
     # 注册所有工具
     tool_classes = [
-        BuildTool, AnswerTool, TeachTool, DecomposeTool,
-        SummarizeTool, SelectTool, FetchTool, FinishTool,
+        #BuildTool, AnswerTool, TeachTool, DecomposeTool,
+        #SummarizeTool, SelectTool, FetchTool, FinishTool,
         ExportObsidianTool
     ]
 
