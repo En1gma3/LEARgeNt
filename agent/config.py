@@ -146,3 +146,25 @@ def get_llm_config() -> dict:
     """
     config = load_config()
     return config.get("llm", {})
+
+
+def get_obsidian_config() -> dict:
+    """
+    获取Obsidian配置项
+
+    Returns:
+        dict: Obsidian配置字典
+    """
+    config = load_config()
+    return config.get("obsidian", {})
+
+
+def get_vault_dir() -> str:
+    """
+    获取Obsidian知识库目录
+
+    Returns:
+        str: 知识库目录路径，默认为 "vault"
+    """
+    obsidian_config = get_obsidian_config()
+    return obsidian_config.get("vault_dir", "vault")
