@@ -43,3 +43,7 @@ Thumbs.db
 
 # Obsidian
 vault
+vault_test
+
+#md
+*.md

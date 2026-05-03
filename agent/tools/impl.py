@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.tools.registry import BaseTool, ToolResult
 from agent.llm_client import get_llm_client
+from agent.config import get_vault_dir
 from cli.selector import readline_with_chinese
 from utils import get_logger
 
@@ -647,7 +648,8 @@ class ExportObsidianTool(BaseTool):
             needs_agent=True
         )
         from agent.tools.export import ObsidianExporter
-        self._exporter = ObsidianExporter("vault")
+        vault_dir = get_vault_dir()
+        self._exporter = ObsidianExporter(vault_dir)
 
     async def execute(self, params: Dict, context: Dict) -> ToolResult:
         """导出学习会话到 Obsidian"""

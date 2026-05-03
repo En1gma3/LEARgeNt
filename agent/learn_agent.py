@@ -152,6 +152,95 @@ class LearnMateAgent:
 
         return 0
 
+    async def handle_input(self, user_input: str) -> str:
+        """处理单条用户输入（供 Feishu 等非交互式接口调用）
+
+        Args:
+            user_input: 用户输入的文本
+
+        Returns:
+            Agent 的回复文本
+        """
+        logger.info(f"[LearnMateAgent.handle_input] user_input={user_input}")
+
+        # 新增：/clear 指令检测
+        if user_input.strip() == "/clear":
+            self.message_history = []
+            self.state = AgentState.IDLE
+            self.current_term = None
+            self.anchors = None
+            logger.info(f"Session cleared")
+            return "好的，已开启新的对话！之前的上下文已清除。"
+
+        system_prompt = """你是一个智能学习助手，采用苏格拉底式对话帮助用户学习概念。
+
+【核心目标】
+通过提问引导用户主动思考，而不是直接给出答案，帮助用户真正理解概念。
+
+【教学策略】
+1. 先评估用户理解水平
+2. 引导式提问，每次最多1-2个问题
+3. 解释时用类比、生活例子
+4. 错误处理用追问代替否定
+5. 阶段结束时简要总结
+
+【对话风格】
+- 亲切友善，像耐心导师
+- 优先以提问结尾（除非解释或总结）
+- 单次输出不超过5句话
+
+请直接用中文回复用户。"""
+
+        system_msg = {"role": "system", "content": system_prompt}
+
+        try:
+            self.message_history.append(user_message(user_input))
+
+            TOOLS = self.registry.get_tools_for_llm()
+            response = self.llm.chat_with_tools(
+                [system_msg] + self.message_history,
+                TOOLS
+            )
+            logger.info(f"[LearnMateAgent.handle_input] LLM response type: {response.get('type')}")
+
+            if response.get("type") == "tool_use":
+                tool_calls = response.get("tool_calls", [])
+                if not tool_calls:
+                    return "我没有理解你的意思，请再说一次。"
+
+                tool_call = tool_calls[0]
+                tool_name = tool_call.get("name")
+                tool_input = tool_call.get("input", {})
+                tool_use_id = tool_call.get("id", create_tool_use_id())
+
+                self.message_history.append(assistant_message_with_tool(
+                    tool_use_id=tool_use_id,
+                    tool_name=tool_name,
+                    tool_input=tool_input
+                ))
+
+                result = await self._execute_tool(tool_name, tool_input)
+
+                userFacingText = await self._handle_export_result(
+                    tool_use_id=tool_use_id,
+                    result=result
+                )
+
+                continue_response = self.llm.chat(
+                    [system_msg] + self.message_history,
+                    max_tokens=4096
+                )
+                self.message_history.append(assistant_message(continue_response))
+                return continue_response
+            else:
+                response_text = response.get("content", "")
+                self.message_history.append(assistant_message(response_text))
+                return response_text
+
+        except Exception as e:
+            logger.error(f"[LearnMateAgent.handle_input] Error: {e}", exc_info=True)
+            return f"发生错误: {e}"
+
     async def _execute_tool(self, tool_name: str, params: Dict) -> Dict:
         """执行工具"""
         logger.info(f"[_execute_tool] tool_name={tool_name}, params={params}")

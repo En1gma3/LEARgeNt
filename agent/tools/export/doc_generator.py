@@ -152,6 +152,21 @@ class DocGenerator:
 
 ---
 
+### 📄 文件元数据要求
+
+**必须**在每个文档开头使用 YAML frontmatter：
+
+---
+title: {current_term}
+para_category: [分类目录]  # Areas / Resources / Projects / Archives
+subfolder: [子文件夹]      # 从现有文件夹选择，或使用"新建:文件夹名"创建新文件夹
+tags: [标签1, 标签2]
+---
+
+正文内容...
+
+---
+
 ## 🔗 链接策略（关键）
 
 - 每个重要概念必须转为 [[双链]]

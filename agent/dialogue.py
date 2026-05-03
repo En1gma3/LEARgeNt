@@ -22,6 +22,9 @@ logger = get_logger(__name__)
 class DialogueManager:
     """对话管理器"""
 
+    # 类级别的用户会话缓存
+    _user_sessions: Dict[str, "DialogueManager"] = {}
+
     def __init__(self):
         logger.info("Initializing DialogueManager")
         self.state = DialogueState.IDLE
@@ -43,6 +46,22 @@ class DialogueManager:
         self._pending_kpoints: List[str] = []  # 当前维度下的知识点
 
         logger.info("DialogueManager initialized")
+
+    @classmethod
+    def get_for_user(cls, user_id: str) -> "DialogueManager":
+        """
+        获取或创建用户独立的 DialogueManager
+
+        Args:
+            user_id: 用户唯一标识
+
+        Returns:
+            该用户的 DialogueManager 实例
+        """
+        if user_id not in cls._user_sessions:
+            logger.info(f"Creating new DialogueManager for user: {user_id}")
+            cls._user_sessions[user_id] = cls()
+        return cls._user_sessions[user_id]
 
     def start_session(self, mode: str = "learn") -> str:
         """开始新会话"""
